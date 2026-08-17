@@ -101,3 +101,7 @@ start.sh                Dev launcher (loads .env if present)
 Never commit `.env` or API keys. `.env` is gitignored. `.env.example` only shows empty variable names.
 
 The deep-analysis suggestion is a local heuristic over public feeds. You can lose money.
+
+## License
+
+[MIT](LICENSE) © 2026 Zidong
