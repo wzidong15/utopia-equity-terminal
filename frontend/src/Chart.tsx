@@ -18,24 +18,24 @@ export default function Chart({ bars }: { bars: Bar[] }) {
     if (!host.current) return;
     const c = createChart(host.current, {
       layout: {
-        background: { type: ColorType.Solid, color: "#0b0d10" },
-        textColor: "#8b95a3",
-        fontFamily: "IBM Plex Mono, monospace",
+        background: { type: ColorType.Solid, color: "#ffffff" },
+        textColor: "#656d76",
+        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       },
       grid: {
-        vertLines: { color: "#1a1f27" },
-        horzLines: { color: "#1a1f27" },
+        vertLines: { color: "#eaeef2" },
+        horzLines: { color: "#eaeef2" },
       },
-      rightPriceScale: { borderColor: "#242a33" },
-      timeScale: { borderColor: "#242a33", timeVisible: true },
-      crosshair: { horzLine: { color: "#3a4452" }, vertLine: { color: "#3a4452" } },
+      rightPriceScale: { borderColor: "#d0d7de" },
+      timeScale: { borderColor: "#d0d7de", timeVisible: true },
+      crosshair: { horzLine: { color: "#0969da" }, vertLine: { color: "#0969da" } },
     });
     const candles = c.addCandlestickSeries({
-      upColor: "#3dd68c",
-      downColor: "#f0616d",
+      upColor: "#1a7f37",
+      downColor: "#cf222e",
       borderVisible: false,
-      wickUpColor: "#3dd68c",
-      wickDownColor: "#f0616d",
+      wickUpColor: "#1a7f37",
+      wickDownColor: "#cf222e",
     });
     const vols = c.addHistogramSeries({
       priceScaleId: "vol",
@@ -71,7 +71,7 @@ export default function Chart({ bars }: { bars: Bar[] }) {
     const vols = bars.map((b) => ({
       time: b.time as UTCTimestamp,
       value: b.volume ?? 0,
-      color: (b.close ?? 0) >= (b.open ?? 0) ? "rgba(61,214,140,0.35)" : "rgba(240,97,109,0.35)",
+      color: (b.close ?? 0) >= (b.open ?? 0) ? "rgba(26,127,55,0.35)" : "rgba(207,34,46,0.35)",
     }));
     candle.current.setData(data);
     volume.current.setData(vols);

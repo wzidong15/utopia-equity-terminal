@@ -7,19 +7,29 @@ Free sources (same stack as the TradingView / Vibe-Trading MCPs):
 
 from __future__ import annotations
 
+import csv
+import io
+import json
 import math
 import os
+import socket
+import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from typing import Any, Literal
+from urllib.parse import urlencode
 
 import httpx
 import pandas as pd
+import requests
 import yfinance as yf
 from fastapi import FastAPI, HTTPException, Query as Q
 from fastapi.middleware.cors import CORSMiddleware
 from tradingview_screener import Query, col
 from tradingview_ta import Interval, TA_Handler
+
+import llm_advice
 
 POLYGON_KEY = os.environ.get("POLYGON_API_KEY") or os.environ.get("MASSIVE_API_KEY") or ""
 POLYGON_BASE = os.environ.get("MASSIVE_API_BASE_URL") or "https://api.polygon.io"
@@ -87,6 +97,17 @@ RANGE_TO_YF = {
     "5y": ("5y", "1wk"),
 }
 
+# Yahoo v8 chart API uses the same range keys; interval must match Yahoo's allowed set.
+RANGE_TO_YAHOO_CHART = {
+    "1d": ("1d", "1m"),
+    "5d": ("5d", "5m"),
+    "1mo": ("1mo", "30m"),
+    "3mo": ("3mo", "1d"),
+    "6mo": ("6mo", "1d"),
+    "1y": ("1y", "1d"),
+    "5y": ("5y", "1wk"),
+}
+
 _cache: dict[str, tuple[float, Any]] = {}
 
 
@@ -113,6 +134,231 @@ def _clean(v: Any) -> Any:
         except Exception:
             return str(v)
     return v
+
+
+YAHOO_UA = "Mozilla/5.0 (compatible; UtopiaEquityTerminal/1.0)"
+QUOTE_HTTP_TIMEOUT = float(os.environ.get("UTOPIA_QUOTE_HTTP_TIMEOUT", "6"))
+CHART_HTTP_TIMEOUT = float(os.environ.get("UTOPIA_CHART_HTTP_TIMEOUT", "8"))
+TV_SCAN_HEADERS = {
+    "accept": "application/json",
+    "content-type": "application/json",
+    "origin": "https://www.tradingview.com",
+    "referer": "https://www.tradingview.com/",
+}
+
+
+@lru_cache(maxsize=1)
+def _outbound_config() -> tuple[str | None, str | None]:
+    """(interface_name, bind_ip) for broken macOS TCP source selection (Errno 49)."""
+    iface = (os.environ.get("UTOPIA_BIND_INTERFACE") or "").strip() or None
+    ip = (os.environ.get("UTOPIA_BIND_IP") or "").strip() or None
+    if not ip:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.settimeout(2.0)
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+        except OSError:
+            ip = None
+    return iface, ip
+
+
+def _curl_fetch(
+    method: str,
+    url: str,
+    *,
+    body: str | None = None,
+    timeout: float = 15.0,
+    ip_version: int | None = None,
+    interface: str | None = None,
+) -> str:
+    cmd = [
+        "curl",
+        "-sS",
+        "-L",
+        "--max-time",
+        str(max(1, int(timeout))),
+        "-A",
+        YAHOO_UA,
+    ]
+    if interface:
+        cmd.extend(["--interface", interface])
+    if ip_version == 4:
+        cmd.insert(1, "-4")
+    elif ip_version == 6:
+        cmd.insert(1, "-6")
+    if method.upper() == "POST":
+        cmd.extend(["-X", "POST", "-H", "Content-Type: application/json"])
+        if body is not None:
+            cmd.extend(["-d", body])
+    cmd.append(url)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5, check=False)
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()
+        raise RuntimeError(err or f"curl exit {proc.returncode}")
+    return proc.stdout
+
+
+def _requests_fetch(
+    method: str,
+    url: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    timeout: float = 15.0,
+    bind_ip: str | None = None,
+) -> str:
+    headers = {"User-Agent": YAHOO_UA}
+    if json_body is not None:
+        headers.update(TV_SCAN_HEADERS)
+    session = requests.Session()
+    if bind_ip:
+        from requests.adapters import HTTPAdapter
+
+        class _BindAdapter(HTTPAdapter):
+            def init_poolmanager(self, *args, **kwargs):
+                kwargs["source_address"] = (bind_ip, 0)
+                return super().init_poolmanager(*args, **kwargs)
+
+        session.mount("https://", _BindAdapter())
+        session.mount("http://", _BindAdapter())
+    if method.upper() == "GET":
+        r = session.get(url, headers=headers, timeout=timeout)
+    else:
+        r = session.post(url, json=json_body, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.text
+
+
+def _httpx_fetch(
+    method: str,
+    url: str,
+    *,
+    json_body: dict[str, Any] | None = None,
+    timeout: float = 15.0,
+    bind_ip: str | None = None,
+) -> str:
+    headers = {"User-Agent": YAHOO_UA}
+    if json_body is not None:
+        headers.update(TV_SCAN_HEADERS)
+    client_kwargs: dict[str, Any] = {"timeout": timeout, "headers": headers}
+    if bind_ip:
+        client_kwargs["transport"] = httpx.HTTPTransport(local_address=bind_ip)
+    with httpx.Client(**client_kwargs) as client:
+        if method.upper() == "GET":
+            r = client.get(url)
+        else:
+            r = client.post(url, json=json_body)
+        r.raise_for_status()
+        return r.text
+
+
+def _http_text(
+    method: str,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+    timeout: float = 15.0,
+) -> str:
+    if method.upper() == "GET" and params:
+        url = f"{url}?{urlencode(params)}"
+    errors: list[str] = []
+    body = json.dumps(json_body) if json_body is not None else None
+    iface, bind_ip = _outbound_config()
+    attempts: list[tuple[str, Any]] = []
+    if iface:
+        attempts.append(
+            ("curl-if", lambda: _curl_fetch(method, url, body=body, timeout=timeout, interface=iface))
+        )
+    if bind_ip:
+        attempts.extend(
+            [
+                ("httpx-bind", lambda: _httpx_fetch(method, url, json_body=json_body, timeout=timeout, bind_ip=bind_ip)),
+                ("requests-bind", lambda: _requests_fetch(method, url, json_body=json_body, timeout=timeout, bind_ip=bind_ip)),
+                ("curl-bind", lambda: _curl_fetch(method, url, body=body, timeout=timeout, interface=bind_ip)),
+            ]
+        )
+    attempts.extend(
+        [
+            ("httpx", lambda: _httpx_fetch(method, url, json_body=json_body, timeout=timeout)),
+            ("requests", lambda: _requests_fetch(method, url, json_body=json_body, timeout=timeout)),
+            ("curl", lambda: _curl_fetch(method, url, body=body, timeout=timeout)),
+            ("curl6", lambda: _curl_fetch(method, url, body=body, timeout=timeout, ip_version=6)),
+            ("curl4", lambda: _curl_fetch(method, url, body=body, timeout=timeout, ip_version=4)),
+        ]
+    )
+    for label, fn in attempts:
+        try:
+            return fn()
+        except Exception as e:
+            errors.append(f"{label}: {e}")
+    raise RuntimeError("; ".join(errors))
+
+
+def _http_json(
+    method: str,
+    url: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_body: dict[str, Any] | None = None,
+    timeout: float = 15.0,
+) -> Any:
+    return json.loads(_http_text(method, url, params=params, json_body=json_body, timeout=timeout))
+
+
+def _tv_get_scanner_data(q: Query) -> tuple[int, pd.DataFrame]:
+    q.query.setdefault("range", [0, 50])
+    json_obj = _http_json("POST", q.url, json_body=q.query, timeout=20)
+    rows_count = int(json_obj.get("totalCount") or 0)
+    data = json_obj.get("data") or []
+    df = pd.DataFrame(
+        data=([row["s"], *row["d"]] for row in data),
+        columns=["ticker", *q.query.get("columns", ())],
+    )
+    return rows_count, df
+
+
+def _make_quote(
+    symbol: str,
+    *,
+    price: Any,
+    prev: Any = None,
+    open_: Any = None,
+    high: Any = None,
+    low: Any = None,
+    volume: Any = None,
+    market_cap: Any = None,
+    year_high: Any = None,
+    year_low: Any = None,
+    exchange: Any = None,
+    name: Any = None,
+    source: str,
+    delay: str,
+) -> dict[str, Any]:
+    yf_sym = symbol.strip().upper().split(":")[-1]
+    price = _clean(price)
+    prev = _clean(prev)
+    change = (price - prev) if price is not None and prev else None
+    change_pct = (change / prev * 100) if change is not None and prev else None
+    return {
+        "ticker": yf_sym,
+        "symbol": yf_sym,
+        "name": name or yf_sym,
+        "exchange": _clean(exchange),
+        "price": price,
+        "change_pct": change_pct,
+        "change": change,
+        "open": _clean(open_),
+        "high": _clean(high),
+        "low": _clean(low),
+        "volume": _clean(volume),
+        "market_cap": _clean(market_cap),
+        "year_high": _clean(year_high),
+        "year_low": _clean(year_low),
+        "source": source,
+        "delay": delay,
+        "as_of": int(time.time()),
+    }
 
 
 def _row_to_quote(row: pd.Series) -> dict[str, Any]:
@@ -184,7 +430,7 @@ def _tv_query(tickers: list[str] | None = None, extra_where=None, order=None, li
     if order:
         q = q.order_by(*order) if isinstance(order, tuple) else q.order_by(order)
     q = q.limit(limit)
-    _, df = q.get_scanner_data()
+    _, df = _tv_get_scanner_data(q)
     if df is None or df.empty:
         return pd.DataFrame()
     return df
@@ -198,13 +444,12 @@ def resolve_tv_ticker(symbol: str) -> str:
     if symbol in INDEX_TICKERS:
         return INDEX_TICKERS[symbol]
     try:
-        _, df = (
+        _, df = _tv_get_scanner_data(
             Query()
             .select("name", "exchange", "type", "is_primary", "market_cap_basic")
             .set_markets("america")
             .where(col("name") == symbol)
             .limit(20)
-            .get_scanner_data()
         )
     except Exception as e:
         raise HTTPException(502, f"TradingView lookup failed: {e}") from e
@@ -218,33 +463,396 @@ def resolve_tv_ticker(symbol: str) -> str:
     return str(pick["ticker"])
 
 
-def _yahoo_quote(symbol: str) -> dict[str, Any]:
+def _yahoo_ticker_symbol(symbol: str) -> str:
     yf_sym = symbol.strip().upper().split(":")[-1]
-    t = yf.Ticker("^VIX" if yf_sym == "VIX" else yf_sym)
-    fi = t.fast_info
-    price = _clean(getattr(fi, "last_price", None))
-    prev = _clean(getattr(fi, "previous_close", None))
-    change = (price - prev) if price is not None and prev else None
-    change_pct = (change / prev * 100) if change is not None and prev else None
-    return {
-        "ticker": yf_sym,
-        "symbol": yf_sym,
-        "name": yf_sym,
-        "exchange": _clean(getattr(fi, "exchange", None)),
-        "price": price,
-        "change_pct": change_pct,
-        "change": change,
-        "open": _clean(getattr(fi, "open", None)),
-        "high": _clean(getattr(fi, "day_high", None)),
-        "low": _clean(getattr(fi, "day_low", None)),
-        "volume": _clean(getattr(fi, "last_volume", None)),
-        "market_cap": _clean(getattr(fi, "market_cap", None)),
-        "year_high": _clean(getattr(fi, "year_high", None)),
-        "year_low": _clean(getattr(fi, "year_low", None)),
-        "source": "yfinance",
-        "delay": "yahoo",
-        "as_of": int(time.time()),
+    return "^VIX" if yf_sym == "VIX" else yf_sym
+
+
+def _yahoo_quote(symbol: str) -> dict[str, Any]:
+    ticker_sym = _yahoo_ticker_symbol(symbol)
+    t = yf.Ticker(ticker_sym)
+
+    try:
+        fi = t.fast_info
+        price = _clean(getattr(fi, "last_price", None))
+        if price is not None:
+            return _make_quote(
+                symbol,
+                price=price,
+                prev=_clean(getattr(fi, "previous_close", None)),
+                open_=_clean(getattr(fi, "open", None)),
+                high=_clean(getattr(fi, "day_high", None)),
+                low=_clean(getattr(fi, "day_low", None)),
+                volume=_clean(getattr(fi, "last_volume", None)),
+                market_cap=_clean(getattr(fi, "market_cap", None)),
+                year_high=_clean(getattr(fi, "year_high", None)),
+                year_low=_clean(getattr(fi, "year_low", None)),
+                exchange=_clean(getattr(fi, "exchange", None)),
+                source="yfinance",
+                delay="yahoo",
+            )
+    except Exception:
+        pass
+
+    for period in ("5d", "1mo", "3mo"):
+        try:
+            hist = t.history(period=period, interval="1d")
+            if hist is not None and not hist.empty:
+                row = hist.iloc[-1]
+                prev = _clean(hist.iloc[-2]["Close"]) if len(hist) >= 2 else None
+                return _make_quote(
+                    symbol,
+                    price=_clean(row.get("Close")),
+                    prev=prev,
+                    open_=_clean(row.get("Open")),
+                    high=_clean(row.get("High")),
+                    low=_clean(row.get("Low")),
+                    volume=_clean(row.get("Volume")),
+                    source="yfinance",
+                    delay="yahoo",
+                )
+        except Exception:
+            continue
+
+    try:
+        info = t.info or {}
+        price = _clean(info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose"))
+        if price is not None:
+            prev = _clean(info.get("regularMarketPreviousClose") or info.get("previousClose"))
+            delay = "yahoo" if info.get("regularMarketPrice") or info.get("currentPrice") else "previous_close"
+            return _make_quote(
+                symbol,
+                price=price,
+                prev=prev if delay == "yahoo" else None,
+                open_=_clean(info.get("regularMarketOpen") or info.get("open")),
+                high=_clean(info.get("regularMarketDayHigh") or info.get("dayHigh")),
+                low=_clean(info.get("regularMarketDayLow") or info.get("dayLow")),
+                volume=_clean(info.get("regularMarketVolume") or info.get("volume")),
+                market_cap=_clean(info.get("marketCap")),
+                year_high=_clean(info.get("fiftyTwoWeekHigh")),
+                year_low=_clean(info.get("fiftyTwoWeekLow")),
+                exchange=_clean(info.get("exchange")),
+                name=_clean(info.get("shortName") or info.get("longName")),
+                source="yfinance",
+                delay=delay,
+            )
+    except Exception:
+        pass
+
+    raise RuntimeError(f"Yahoo quote unavailable for {symbol.strip().upper().split(':')[-1]}")
+
+
+def _yahoo_chart_quote(symbol: str) -> dict[str, Any]:
+    ticker_sym = _yahoo_ticker_symbol(symbol)
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_sym}"
+    body = _http_json(
+        "GET",
+        url,
+        params={"interval": "1d", "range": "5d", "includePrePost": "false"},
+        timeout=QUOTE_HTTP_TIMEOUT,
+    )
+    results = (body.get("chart") or {}).get("result") or []
+    if not results:
+        raise RuntimeError("Yahoo chart returned no data")
+    meta = results[0].get("meta") or {}
+    live = _clean(meta.get("regularMarketPrice"))
+    prev = _clean(meta.get("previousClose") or meta.get("chartPreviousClose"))
+    price = live or prev
+    if price is None:
+        indicators = results[0].get("indicators") or {}
+        quote = (indicators.get("quote") or [{}])[0]
+        for c in reversed(quote.get("close") or []):
+            if c is not None:
+                price = _clean(c)
+                break
+    if price is None:
+        raise RuntimeError("Yahoo chart has no close price")
+    delay = "yahoo" if live is not None else "previous_close"
+    return _make_quote(
+        symbol,
+        price=price,
+        prev=prev if live is not None else None,
+        source="yahoo-chart",
+        delay=delay,
+        name=_clean(meta.get("shortName") or meta.get("symbol")),
+        exchange=_clean(meta.get("exchangeName")),
+    )
+
+
+def _yahoo_chart_bars(symbol: str, range: str) -> dict[str, Any]:
+    if range not in RANGE_TO_YAHOO_CHART:
+        raise ValueError(f"unsupported range {range}")
+    ticker_sym = _yahoo_ticker_symbol(symbol)
+    yahoo_range, interval = RANGE_TO_YAHOO_CHART[range]
+    params = {
+        "interval": interval,
+        "range": yahoo_range,
+        "includePrePost": "false",
     }
+    body = None
+    errors: list[str] = []
+    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
+        try:
+            body = _http_json(
+                "GET",
+                f"https://{host}/v8/finance/chart/{ticker_sym}",
+                params=params,
+                timeout=CHART_HTTP_TIMEOUT,
+            )
+            break
+        except Exception as e:
+            errors.append(f"{host}: {e}")
+    if body is None:
+        raise RuntimeError("; ".join(errors) if errors else "Yahoo chart unreachable")
+    results = (body.get("chart") or {}).get("result") or []
+    if not results:
+        raise RuntimeError("Yahoo chart returned no data")
+    r0 = results[0]
+    timestamps = r0.get("timestamp") or []
+    q = ((r0.get("indicators") or {}).get("quote") or [{}])[0]
+    opens = q.get("open") or []
+    highs = q.get("high") or []
+    lows = q.get("low") or []
+    closes = q.get("close") or []
+    volumes = q.get("volume") or []
+    bars: list[dict[str, Any]] = []
+    for i, ts in enumerate(timestamps):
+        close = _clean(closes[i] if i < len(closes) else None)
+        if close is None:
+            continue
+        bars.append(
+            {
+                "time": int(ts),
+                "open": _clean(opens[i] if i < len(opens) else None),
+                "high": _clean(highs[i] if i < len(highs) else None),
+                "low": _clean(lows[i] if i < len(lows) else None),
+                "close": close,
+                "volume": _clean(volumes[i] if i < len(volumes) else None),
+            }
+        )
+    if not bars:
+        raise RuntimeError("Yahoo chart has no bars")
+    return {
+        "symbol": ticker_sym,
+        "interval": interval,
+        "range": range,
+        "source": "yahoo-chart",
+        "bars": bars,
+    }
+
+
+def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
+    period, interval = RANGE_TO_YF[range]
+    yf_sym = _yahoo_ticker_symbol(symbol)
+    t = yf.Ticker(yf_sym)
+    df = t.history(period=period, interval=interval, auto_adjust=True)
+    if df is None or df.empty:
+        df = yf.download(
+            yf_sym,
+            period=period,
+            interval=interval,
+            auto_adjust=True,
+            progress=False,
+            threads=True,
+        )
+    if df is None or df.empty:
+        raise RuntimeError(f"No history for {symbol}")
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.reset_index()
+    time_col = "Datetime" if "Datetime" in df.columns else "Date"
+    bars: list[dict[str, Any]] = []
+    for _, r in df.iterrows():
+        ts = pd.Timestamp(r[time_col])
+        bars.append(
+            {
+                "time": int(ts.timestamp()),
+                "open": _clean(r.get("Open")),
+                "high": _clean(r.get("High")),
+                "low": _clean(r.get("Low")),
+                "close": _clean(r.get("Close")),
+                "volume": _clean(r.get("Volume")),
+            }
+        )
+    bars = [b for b in bars if b["close"] is not None]
+    if not bars:
+        raise RuntimeError(f"No history bars for {symbol}")
+    return {
+        "symbol": yf_sym,
+        "interval": interval,
+        "range": range,
+        "source": "yfinance",
+        "bars": bars,
+    }
+
+
+def _fetch_history_bars(symbol: str, range: str) -> dict[str, Any]:
+    errors: list[str] = []
+    for label, fn in (
+        ("yahoo-chart", lambda: _yahoo_chart_bars(symbol, range)),
+        ("yfinance", lambda: _yfinance_history_bars(symbol, range)),
+    ):
+        try:
+            return fn()
+        except Exception as e:
+            errors.append(f"{label}: {e}")
+    raise RuntimeError("; ".join(errors) if errors else "History unavailable")
+
+
+def _yahoo_download_close(symbol: str) -> dict[str, Any]:
+    ticker_sym = _yahoo_ticker_symbol(symbol)
+    for period in ("5d", "1mo", "3mo", "6mo", "1y", "max"):
+        try:
+            df = yf.download(
+                ticker_sym,
+                period=period,
+                interval="1d",
+                auto_adjust=True,
+                progress=False,
+                threads=False,
+            )
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        row = df.iloc[-1]
+        prev = _clean(df.iloc[-2]["Close"]) if len(df) >= 2 else None
+        return _make_quote(
+            symbol,
+            price=_clean(row.get("Close")),
+            prev=prev,
+            open_=_clean(row.get("Open")),
+            high=_clean(row.get("High")),
+            low=_clean(row.get("Low")),
+            volume=_clean(row.get("Volume")),
+            source="yfinance",
+            delay="previous_close",
+        )
+    raise RuntimeError(f"No historical close for {symbol.strip().upper().split(':')[-1]}")
+
+
+def _stooq_symbol(symbol: str) -> str:
+    yf_sym = symbol.strip().upper().split(":")[-1]
+    if yf_sym == "VIX":
+        return "^vix"
+    if yf_sym in INDEX_TICKERS:
+        return f"{yf_sym.lower()}.us"
+    return f"{yf_sym.lower()}.us"
+
+
+def _stooq_quote(symbol: str) -> dict[str, Any]:
+    stooq_sym = _stooq_symbol(symbol)
+    text = _http_text(
+        "GET",
+        "https://stooq.com/q/l/",
+        params={"s": stooq_sym, "f": "sd2t2ohlcv", "h": "", "e": "csv"},
+        timeout=QUOTE_HTTP_TIMEOUT,
+    )
+    rows = list(csv.reader(io.StringIO(text.strip())))
+    if len(rows) < 2 or len(rows[1]) < 7:
+        text = _http_text("GET", "https://stooq.com/q/d/l/", params={"s": stooq_sym, "i": "d"})
+        rows = list(csv.reader(io.StringIO(text.strip())))
+        if len(rows) < 2 or len(rows[-1]) < 5:
+            raise RuntimeError(f"Stooq returned no rows for {stooq_sym}")
+        last = rows[-1]
+        prev = _clean(float(rows[-2][4])) if len(rows) >= 3 else None
+        return _make_quote(
+            symbol,
+            price=_clean(float(last[4])),
+            prev=prev,
+            open_=_clean(float(last[1])) if last[1] else None,
+            high=_clean(float(last[2])) if last[2] else None,
+            low=_clean(float(last[3])) if last[3] else None,
+            volume=_clean(float(last[5])) if len(last) > 5 and last[5] else None,
+            source="stooq",
+            delay="previous_close",
+        )
+
+    row = rows[1]
+    open_ = _clean(float(row[3])) if row[3] else None
+    high = _clean(float(row[4])) if row[4] else None
+    low = _clean(float(row[5])) if row[5] else None
+    close = _clean(float(row[6])) if row[6] else None
+    volume = _clean(float(row[7])) if len(row) > 7 and row[7] else None
+    if close is None:
+        raise RuntimeError(f"Stooq close missing for {stooq_sym}")
+    return _make_quote(
+        symbol,
+        price=close,
+        open_=open_,
+        high=high,
+        low=low,
+        volume=volume,
+        source="stooq",
+        delay="previous_close",
+    )
+
+
+def _tv_quote(symbol: str) -> dict[str, Any]:
+    raw = symbol.strip().upper()
+    yf_sym = raw.split(":")[-1]
+    candidates: list[str] = []
+    if yf_sym in INDEX_TICKERS:
+        candidates.append(INDEX_TICKERS[yf_sym])
+    elif ":" in raw:
+        candidates.append(raw)
+    else:
+        try:
+            candidates.append(resolve_tv_ticker(symbol))
+        except Exception:
+            pass
+        candidates.extend([f"NASDAQ:{yf_sym}", f"NYSE:{yf_sym}", f"AMEX:{yf_sym}"])
+
+    seen: set[str] = set()
+    for tv in candidates:
+        if tv in seen:
+            continue
+        seen.add(tv)
+        df = _tv_query([tv], limit=1)
+        if not df.empty and _clean(df.iloc[0].get("close")) is not None:
+            return _row_to_quote(df.iloc[0])
+
+    try:
+        _, df = _tv_get_scanner_data(
+            Query()
+            .select(*QUOTE_COLS)
+            .set_markets("america")
+            .where(col("name") == yf_sym, col("is_primary") == True)  # noqa: E712
+            .limit(1)
+        )
+        if df is not None and not df.empty and _clean(df.iloc[0].get("close")) is not None:
+            return _row_to_quote(df.iloc[0])
+    except Exception:
+        pass
+
+    raise RuntimeError(f"TradingView quote unavailable for {yf_sym}")
+
+
+def _polygon_prev_quote(symbol: str) -> dict[str, Any]:
+    yf_sym = symbol.strip().upper().split(":")[-1]
+    if yf_sym == "VIX":
+        raise RuntimeError("VIX is not a Polygon stock ticker")
+    url = f"{POLYGON_BASE}/v2/aggs/ticker/{yf_sym}/prev"
+    body = _http_json("GET", url, params={"adjusted": "true", "apiKey": POLYGON_KEY})
+    rows = body.get("results") or []
+    if not rows:
+        raise RuntimeError(f"Polygon prev close unavailable for {yf_sym}")
+    bar = rows[0]
+    price = _clean(bar.get("c"))
+    if price is None:
+        raise RuntimeError(f"Polygon prev close empty for {yf_sym}")
+    return _make_quote(
+        symbol,
+        price=price,
+        open_=_clean(bar.get("o")),
+        high=_clean(bar.get("h")),
+        low=_clean(bar.get("l")),
+        volume=_clean(bar.get("v")),
+        source="polygon",
+        delay="previous_close",
+    )
 
 
 def _polygon_quote(symbol: str) -> dict[str, Any]:
@@ -252,10 +860,7 @@ def _polygon_quote(symbol: str) -> dict[str, Any]:
     if yf_sym == "VIX":
         raise RuntimeError("VIX is not a Polygon stock ticker")
     url = f"{POLYGON_BASE}/v2/snapshot/locale/us/markets/stocks/tickers/{yf_sym}"
-    with httpx.Client(timeout=8.0) as client:
-        r = client.get(url, params={"apiKey": POLYGON_KEY})
-        r.raise_for_status()
-        body = r.json()
+    body = _http_json("GET", url, params={"apiKey": POLYGON_KEY})
     t = body.get("ticker") or {}
     day = t.get("day") or {}
     prev = t.get("prevDay") or {}
@@ -285,27 +890,155 @@ def _polygon_quote(symbol: str) -> dict[str, Any]:
     }
 
 
-def _best_quote(symbol: str) -> dict[str, Any]:
-    if POLYGON_KEY:
-        try:
-            return _polygon_quote(symbol)
-        except Exception:
-            pass
+def _try_quote_source(fn, symbol: str) -> dict[str, Any] | None:
     try:
-        tv = resolve_tv_ticker(symbol)
-        df = _tv_query([tv], limit=1)
-        if not df.empty:
-            return _row_to_quote(df.iloc[0])
+        quote = fn(symbol)
+        if quote.get("price") is not None:
+            return quote
     except Exception:
         pass
-    return _yahoo_quote(symbol)
+    return None
+
+
+def _best_quote(symbol: str) -> dict[str, Any]:
+    yf_sym = symbol.strip().upper().split(":")[-1]
+    attempts: list[tuple[str, Any]] = []
+    if POLYGON_KEY:
+        attempts.extend([("polygon", _polygon_quote), ("polygon-prev", _polygon_prev_quote)])
+    attempts.extend(
+        [
+            ("tradingview", _tv_quote),
+            ("yahoo-chart", _yahoo_chart_quote),
+            ("stooq", _stooq_quote),
+            ("yfinance", _yahoo_quote),
+            ("yfinance-close", _yahoo_download_close),
+        ]
+    )
+
+    if len(attempts) == 1:
+        result = _try_quote_source(attempts[0][1], symbol)
+        if result:
+            return result
+    else:
+        with ThreadPoolExecutor(max_workers=min(6, len(attempts))) as pool:
+            futs = [pool.submit(_try_quote_source, fn, symbol) for _, fn in attempts]
+            try:
+                for fut in as_completed(futs, timeout=12):
+                    result = fut.result()
+                    if result:
+                        return result
+            except TimeoutError:
+                pass
+            for fut in futs:
+                if fut.done():
+                    try:
+                        result = fut.result()
+                        if result:
+                            return result
+                    except Exception:
+                        pass
+
+    raise RuntimeError(f"No quote for {yf_sym}")
+
+
+def _best_quotes(symbols: list[str]) -> list[dict[str, Any]]:
+    if not symbols:
+        return []
+    if len(symbols) == 1:
+        return [_best_quote(symbols[0])]
+    out: dict[str, dict[str, Any]] = {}
+    workers = min(8, len(symbols))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futs = {pool.submit(_best_quote, sym): sym for sym in symbols}
+        for fut in as_completed(futs):
+            sym = futs[fut]
+            try:
+                out[sym] = fut.result()
+            except Exception:
+                continue
+    return [out[s] for s in symbols if s in out]
+
+
+def _polygon_movers(kind: Literal["gainers", "losers"], limit: int) -> list[dict[str, Any]]:
+    url = f"{POLYGON_BASE}/v2/snapshot/locale/us/markets/stocks/{kind}"
+    body = _http_json("GET", url, params={"apiKey": POLYGON_KEY})
+    out: list[dict[str, Any]] = []
+    for t in (body.get("tickers") or [])[:limit]:
+        sym = str(t.get("ticker") or "").upper()
+        if not sym:
+            continue
+        day = t.get("day") or {}
+        last = t.get("lastTrade") or {}
+        price = _clean(last.get("p")) or _clean(day.get("c"))
+        if price is None:
+            continue
+        out.append(
+            {
+                "ticker": sym,
+                "symbol": sym,
+                "name": sym,
+                "exchange": None,
+                "price": price,
+                "change_pct": _clean(t.get("todaysChangePerc")),
+                "change": _clean(t.get("todaysChange")),
+                "open": _clean(day.get("o")),
+                "high": _clean(day.get("h")),
+                "low": _clean(day.get("l")),
+                "volume": _clean(day.get("v")),
+                "source": "polygon",
+                "delay": "realtime",
+                "as_of": int(time.time()),
+            }
+        )
+    return out
+
+
+def _fetch_movers_items(kind: Literal["gainers", "losers", "active"], limit: int = 15) -> list[dict[str, Any]]:
+    limit = max(5, min(limit, 40))
+    order = {
+        "gainers": ("change", False),
+        "losers": ("change", True),
+        "active": ("volume", False),
+    }[kind]
+    errors: list[str] = []
+    try:
+        df = _tv_query(
+            extra_where=[
+                col("type") == "stock",
+                col("is_primary") == True,  # noqa: E712
+                col("exchange").isin(["NASDAQ", "NYSE", "AMEX"]),
+                col("market_cap_basic") > 1_000_000_000,
+                col("volume") > 200_000,
+                col("close") > 5,
+            ],
+            order=order,
+            limit=limit,
+        )
+        if not df.empty:
+            return [_row_to_quote(r) for _, r in df.iterrows()]
+        errors.append("tradingview: empty")
+    except Exception as e:
+        errors.append(f"tradingview: {e}")
+
+    if POLYGON_KEY and kind in ("gainers", "losers"):
+        try:
+            items = _polygon_movers(kind, limit)
+            if items:
+                return items
+            errors.append("polygon: empty")
+        except Exception as e:
+            errors.append(f"polygon: {e}")
+
+    raise RuntimeError("; ".join(errors) if errors else "Movers unavailable")
 
 
 @app.get("/api/health")
 def health():
+    llm = llm_advice.llm_configured()
     return {
         "ok": True,
         "polygon": bool(POLYGON_KEY),
+        "llm": llm,
         "sources": {
             "quotes": (
                 "Polygon/Massive realtime"
@@ -318,13 +1051,37 @@ def health():
     }
 
 
+@app.get("/api/network-test")
+def network_test():
+    """Probe outbound HTTPS with multiple clients (for Mac networking diagnostics)."""
+    probe_url = "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=1d"
+    results: dict[str, str] = {}
+    body = None
+    for label, fn in (
+        ("httpx", lambda: _httpx_fetch("GET", probe_url, timeout=8)),
+        ("requests", lambda: _requests_fetch("GET", probe_url, timeout=8)),
+        ("curl", lambda: _curl_fetch("GET", probe_url, timeout=8)),
+        ("curl6", lambda: _curl_fetch("GET", probe_url, timeout=8, ip_version=6)),
+        ("curl4", lambda: _curl_fetch("GET", probe_url, timeout=8, ip_version=4)),
+    ):
+        try:
+            text = fn()
+            body = json.loads(text)
+            meta = ((body.get("chart") or {}).get("result") or [{}])[0].get("meta") or {}
+            price = meta.get("regularMarketPrice") or meta.get("previousClose")
+            results[label] = f"ok price={price}"
+        except Exception as e:
+            results[label] = str(e)
+    return {"probe": probe_url, "results": results, "any_ok": any(v.startswith("ok") for v in results.values())}
+
+
 @app.get("/api/indices")
 def indices():
     def fetch():
-        return [_best_quote(s) for s in INDEX_TICKERS]
+        return _best_quotes(list(INDEX_TICKERS))
 
     try:
-        return {"items": _cached("indices", 8, fetch)}
+        return {"items": _cached("indices", 15, fetch)}
     except Exception as e:
         raise HTTPException(502, f"Indices failed: {e}") from e
 
@@ -335,7 +1092,7 @@ def quote(symbol: str):
         return _best_quote(symbol)
 
     try:
-        return _cached(f"quote:{symbol.upper()}", 5, fetch)
+        return _cached(f"quote:{symbol.upper()}", 12, fetch)
     except Exception as e:
         raise HTTPException(502, f"Quote failed: {e}") from e
 
@@ -346,10 +1103,10 @@ def quotes(symbols: str = Q(..., description="Comma-separated tickers")):
     if not raw:
         raise HTTPException(400, "No symbols")
     def fetch():
-        return [_best_quote(s) for s in raw[:40]]
+        return _best_quotes(raw[:40])
 
     try:
-        return {"items": _cached("quotes:" + ",".join(sorted(raw[:40])), 5, fetch)}
+        return {"items": _cached("quotes:" + ",".join(sorted(raw[:40])), 8, fetch)}
     except Exception as e:
         raise HTTPException(502, f"Quotes failed: {e}") from e
 
@@ -357,31 +1114,15 @@ def quotes(symbols: str = Q(..., description="Comma-separated tickers")):
 @app.get("/api/movers")
 def movers(kind: Literal["gainers", "losers", "active"] = "gainers", limit: int = 15):
     limit = max(5, min(limit, 40))
-    order = {
-        "gainers": ("change", False),
-        "losers": ("change", True),
-        "active": ("volume", False),
-    }[kind]
 
     def fetch():
-        df = _tv_query(
-            extra_where=[
-                col("type") == "stock",
-                col("is_primary") == True,  # noqa: E712
-                col("exchange").isin(["NASDAQ", "NYSE", "AMEX"]),
-                col("market_cap_basic") > 1_000_000_000,
-                col("volume") > 200_000,
-                col("close") > 5,
-            ],
-            order=order,  # (column, ascending)
-            limit=limit,
-        )
-        return [_row_to_quote(r) for _, r in df.iterrows()]
+        return _fetch_movers_items(kind, limit)
 
     try:
-        return {"kind": kind, "items": _cached(f"movers:{kind}:{limit}", 20, fetch)}
+        items = _cached(f"movers:{kind}:{limit}", 20, fetch)
+        return {"kind": kind, "items": items}
     except Exception as e:
-        raise HTTPException(502, f"Movers failed: {e}") from e
+        return {"kind": kind, "items": [], "error": str(e)}
 
 
 @app.get("/api/search")
@@ -399,15 +1140,15 @@ def search(q: str, limit: int = 12):
             .set_markets("america")
             .limit(limit)
         )
-        _, df = (
+        _, df = _tv_get_scanner_data(
             base.where(
                 col("type").isin(["stock", "fund", "etf"]),
                 col("is_primary") == True,  # noqa: E712
                 col("name") == needle,
-            ).get_scanner_data()
+            )
         )
         if df is None or df.empty:
-            _, df = (
+            _, df = _tv_get_scanner_data(
                 Query()
                 .select("name", "description", "exchange", "type", "close", "change", "market_cap_basic")
                 .set_markets("america")
@@ -417,7 +1158,6 @@ def search(q: str, limit: int = 12):
                     col("name").like(f"%{needle}%"),
                 )
                 .limit(limit)
-                .get_scanner_data()
             )
         if df is None or df.empty:
             return []
@@ -446,45 +1186,15 @@ def search(q: str, limit: int = 12):
 def history(symbol: str, range: str = "6mo"):
     if range not in RANGE_TO_YF:
         raise HTTPException(400, f"range must be one of {list(RANGE_TO_YF)}")
-    period, interval = RANGE_TO_YF[range]
     yf_sym = symbol.strip().upper().split(":")[-1]
-    if yf_sym == "VIX":
-        yf_sym = "^VIX"
+    cache_sym = "^VIX" if yf_sym == "VIX" else yf_sym
 
     def fetch():
-        df = yf.download(
-            yf_sym,
-            period=period,
-            interval=interval,
-            auto_adjust=True,
-            progress=False,
-            threads=False,
-        )
-        if df is None or df.empty:
-            raise HTTPException(404, f"No history for {symbol}")
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        df = df.reset_index()
-        time_col = "Datetime" if "Datetime" in df.columns else "Date"
-        bars = []
-        for _, r in df.iterrows():
-            ts = pd.Timestamp(r[time_col])
-            bars.append(
-                {
-                    "time": int(ts.timestamp()),
-                    "open": _clean(r.get("Open")),
-                    "high": _clean(r.get("High")),
-                    "low": _clean(r.get("Low")),
-                    "close": _clean(r.get("Close")),
-                    "volume": _clean(r.get("Volume")),
-                }
-            )
-        bars = [b for b in bars if b["close"] is not None]
-        return {"symbol": yf_sym, "interval": interval, "range": range, "source": "yfinance", "bars": bars}
+        return _fetch_history_bars(symbol, range)
 
-    ttl = 15 if range == "1d" else 60
+    ttl = {"1d": 30, "5d": 45}.get(range, 120)
     try:
-        return _cached(f"hist:{yf_sym}:{range}", ttl, fetch)
+        return _cached(f"hist:{cache_sym}:{range}", ttl, fetch)
     except HTTPException:
         raise
     except Exception as e:
@@ -905,6 +1615,154 @@ def _suggest(ta_label: str | None, rsi: float | None, insiders: dict, options: d
     }
 
 
+def _macro_context() -> dict[str, Any]:
+    macro: dict[str, Any] = {}
+    for sym in ("SPY", "QQQ", "DIA", "IWM", "VIX"):
+        try:
+            q = _best_quote(sym)
+            macro[sym] = {
+                "name": q.get("name"),
+                "price": q.get("price"),
+                "change_pct": q.get("change_pct"),
+                "change": q.get("change"),
+                "rsi": q.get("rsi"),
+                "recommend_label": q.get("recommend_label"),
+                "volume": q.get("volume"),
+            }
+        except Exception as e:
+            macro[sym] = {"error": str(e)}
+    return macro
+
+
+def _build_llm_context(yf_sym: str) -> dict[str, Any]:
+    quote = _best_quote(yf_sym)
+    t = yf.Ticker(yf_sym)
+    info: dict[str, Any] = {}
+    try:
+        info = t.info or {}
+    except Exception:
+        pass
+
+    profile_keys = [
+        "sector",
+        "industry",
+        "marketCap",
+        "trailingPE",
+        "forwardPE",
+        "pegRatio",
+        "priceToBook",
+        "profitMargins",
+        "revenueGrowth",
+        "earningsGrowth",
+        "beta",
+        "fiftyTwoWeekHigh",
+        "fiftyTwoWeekLow",
+        "targetMeanPrice",
+        "recommendationKey",
+        "numberOfAnalystOpinions",
+    ]
+    profile = {k: _clean(info.get(k)) for k in profile_keys}
+    summary = _clean(info.get("longBusinessSummary"))
+    if isinstance(summary, str):
+        profile["summary"] = summary[:600]
+
+    ta_block: dict[str, Any] = {}
+    try:
+        tv = resolve_tv_ticker(yf_sym)
+        exchange, name = tv.split(":", 1)
+        handler = TA_Handler(
+            symbol=name,
+            screener="america",
+            exchange=exchange,
+            interval=Interval.INTERVAL_1_DAY,
+        )
+        analysis = handler.get_analysis()
+        ta_block = {
+            "summary": analysis.summary,
+            "indicators": {
+                k: _clean(v)
+                for k, v in (analysis.indicators or {}).items()
+                if k in ("RSI", "MACD.macd", "MACD.signal", "close", "open", "volume")
+            },
+        }
+    except Exception as e:
+        ta_block = {"error": str(e), "label": quote.get("recommend_label")}
+
+    insiders = _insider_block(t)
+    options = _options_block(t)
+    congress = _congress_block(yf_sym)
+    news = _news_items(t, 8)
+    price = quote.get("price")
+    forecast = _forecast_block(info, price if isinstance(price, (int, float)) else None)
+
+    recent_bars: list[dict[str, Any]] = []
+    try:
+        hist = t.history(period="1mo", interval="1d")
+        if hist is not None and not hist.empty:
+            tail = hist.tail(10)
+            for idx, row in tail.iterrows():
+                recent_bars.append(
+                    {
+                        "date": str(idx.date()) if hasattr(idx, "date") else str(idx),
+                        "close": _clean(row.get("Close")),
+                        "volume": _clean(row.get("Volume")),
+                    }
+                )
+    except Exception:
+        pass
+
+    return {
+        "symbol": yf_sym,
+        "as_of": int(time.time()),
+        "quote": quote,
+        "profile": profile,
+        "technicals": ta_block,
+        "insiders": {
+            "net_value": insiders.get("net_value"),
+            "tilt": insiders.get("tilt"),
+            "recent": insiders.get("items", [])[:5],
+        },
+        "options": {
+            "put_call": options.get("put_call"),
+            "call_volume": options.get("call_volume"),
+            "put_volume": options.get("put_volume"),
+            "notable": options.get("items", [])[:6],
+        },
+        "congress": {
+            "buy_count": congress.get("buy_count"),
+            "sell_count": congress.get("sell_count"),
+            "tilt": congress.get("tilt"),
+            "recent": congress.get("items", [])[:5],
+        },
+        "forecast": forecast,
+        "news_headlines": [{"title": n.get("title"), "publisher": n.get("publisher")} for n in news[:6]],
+        "recent_daily_bars": recent_bars,
+        "macro_market": _macro_context(),
+    }
+
+
+@app.post("/api/llm-advice/{symbol}")
+def llm_advice_route(symbol: str):
+    yf_sym = symbol.strip().upper().split(":")[-1]
+    if not llm_advice.llm_configured()["any"]:
+        raise HTTPException(
+            503,
+            "LLM not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env",
+        )
+
+    def run():
+        ctx = _build_llm_context(yf_sym)
+        advice = llm_advice.generate_investment_advice(ctx)
+        return {"symbol": yf_sym, "advice": advice, "context_as_of": ctx.get("as_of")}
+
+    try:
+        return _cached(f"llm-advice:{yf_sym}", 60, run)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"LLM advice failed: {e}") from e
+
+
 @app.get("/api/deep/{symbol}")
 def deep(symbol: str):
     yf_sym = symbol.strip().upper().split(":")[-1]
@@ -914,31 +1772,56 @@ def deep(symbol: str):
 
     def fetch():
         t = yf.Ticker(yf_sym)
-        info = {}
-        try:
-            info = t.info or {}
-        except Exception:
-            info = {}
-        quote = {}
-        try:
-            quote = _best_quote(yf_sym)
-        except Exception:
-            quote = {}
+
+        def safe_info():
+            try:
+                return t.info or {}
+            except Exception:
+                return {}
+
+        def safe_quote():
+            try:
+                return _best_quote(yf_sym)
+            except Exception:
+                return {}
+
+        def safe_ta():
+            try:
+                return ta(yf_sym, "1d")
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=7) as pool:
+            info_f = pool.submit(safe_info)
+            quote_f = pool.submit(safe_quote)
+            insiders_f = pool.submit(_insider_block, t)
+            options_f = pool.submit(_options_block, t)
+            congress_f = pool.submit(_congress_block, yf_sym)
+            news_f = pool.submit(_news_items, t, 8)
+            ta_f = pool.submit(safe_ta)
+            info = info_f.result()
+            quote = quote_f.result()
+            insiders = insiders_f.result()
+            options = options_f.result()
+            congress = congress_f.result()
+            news = news_f.result()
+            ta_data = ta_f.result()
+
         price = quote.get("price")
-        insiders = _insider_block(t)
-        options = _options_block(t)
-        congress = _congress_block(yf_sym)
-        news = _news_items(t, 8)
         forecast = _forecast_block(info, price if isinstance(price, (int, float)) else None)
         ta_label = quote.get("recommend_label")
-        try:
-            ta_data = ta(yf_sym, "1d")
+        rsi = quote.get("rsi")
+        if ta_data:
             ta_label = (ta_data.get("summary") or {}).get("RECOMMENDATION") or ta_label
-            rsi = _clean((ta_data.get("indicators") or {}).get("RSI"))
-        except Exception:
-            rsi = quote.get("rsi")
-            ta_data = None
-        suggestion = _suggest(ta_label, rsi if isinstance(rsi, (int, float)) else quote.get("rsi"), insiders, options, congress, forecast)
+            rsi = _clean((ta_data.get("indicators") or {}).get("RSI")) or rsi
+        suggestion = _suggest(
+            ta_label,
+            rsi if isinstance(rsi, (int, float)) else quote.get("rsi"),
+            insiders,
+            options,
+            congress,
+            forecast,
+        )
         return {
             "symbol": yf_sym,
             "price": price,
@@ -964,11 +1847,28 @@ def snapshot():
     """One payload for the dashboard: indices + three mover boards."""
 
     def fetch():
-        idx = indices()["items"]
-        g = movers("gainers")["items"]
-        l = movers("losers")["items"]
-        a = movers("active")["items"]
-        return {"indices": idx, "gainers": g, "losers": l, "active": a, "as_of": int(time.time())}
+        payload: dict[str, Any] = {
+            "indices": [],
+            "gainers": [],
+            "losers": [],
+            "active": [],
+            "as_of": int(time.time()),
+            "errors": {},
+        }
+        try:
+            payload["indices"] = _cached("indices", 15, lambda: _best_quotes(list(INDEX_TICKERS)))
+        except Exception as e:
+            payload["errors"]["indices"] = str(e)
+        for kind in ("gainers", "losers", "active"):
+            try:
+                payload[kind] = _cached(
+                    f"movers:{kind}:15",
+                    20,
+                    lambda k=kind: _fetch_movers_items(k, 15),
+                )
+            except Exception as e:
+                payload["errors"][kind] = str(e)
+        return payload
 
     try:
         return _cached("snapshot", 15, fetch)

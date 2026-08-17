@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import Chart from "./Chart";
 import DeepPanel from "./DeepPanel";
+import LlmAdvicePanel from "./LlmAdvicePanel";
 import type { DeepAnalysis } from "./deep";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
-
-const WATCH = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "JPM", "UNH", "XOM"];
+import { loadWatchlist, removeFromWatchlist, saveWatchlist, toggleWatchlistSymbol } from "./watchlist";
+import { getCachedQuote, partialFromSearch, rememberQuote, rememberQuotes } from "./quoteCache";
+import { fetchBars, getCachedBars, prefetchBars } from "./chartCache";
 const RANGES = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"] as const;
 
 function fmt(n?: number | null, d = 2) {
@@ -36,42 +38,117 @@ function badgeClass(label?: string | null) {
   return "badge neutral";
 }
 
+function WatchIcon({ active, title }: { active: boolean; title: string }) {
+  return (
+    <svg
+      className={`watch-icon ${active ? "on" : ""}`}
+      viewBox="0 0 16 16"
+      width="14"
+      height="14"
+      aria-hidden
+    >
+      <title>{title}</title>
+      <path
+        d="M8 1.8l1.9 3.85 4.25.62-3.08 3 .73 4.23L8 11.77 3.2 13.5l.73-4.23-3.08-3 4.25-.62L8 1.8z"
+        fill={active ? "currentColor" : "none"}
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function RemoveIcon() {
+  return (
+    <svg className="remove-icon" viewBox="0 0 16 16" width="14" height="14" aria-hidden>
+      <path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function QuoteRow({
   q,
   selected,
   onPick,
+  watched,
+  onToggleWatch,
+  onRemoveWatch,
 }: {
   q: Quote;
   selected?: boolean;
-  onPick: (s: string) => void;
+  onPick: (s: string, preview?: Quote) => void;
+  watched?: boolean;
+  onToggleWatch?: (s: string) => void;
+  onRemoveWatch?: (s: string) => void;
 }) {
   return (
-    <button className={`row ${selected ? "sel" : ""}`} onClick={() => onPick(q.symbol)}>
-      <span className="sym">{q.symbol}</span>
-      <span>
-        <div className="px">{fmt(q.price)}</div>
-        <div className="meta">{q.name}</div>
-      </span>
-      <span className={`px ${cls(q.change_pct)}`}>{pct(q.change_pct)}</span>
-    </button>
+    <div className={`row ${selected ? "sel" : ""}`}>
+      <button type="button" className="row-main" onClick={() => onPick(q.symbol, q)}>
+        <span className="sym">{q.symbol}</span>
+        <span>
+          <div className="px">{fmt(q.price)}</div>
+          <div className="meta">{q.name}</div>
+        </span>
+        <span className={`px ${cls(q.change_pct)}`}>{pct(q.change_pct)}</span>
+      </button>
+      {onRemoveWatch ? (
+        <button
+          type="button"
+          className="remove-btn"
+          title="Remove from watchlist"
+          aria-label={`Remove ${q.symbol} from watchlist`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemoveWatch(q.symbol);
+          }}
+        >
+          <RemoveIcon />
+        </button>
+      ) : (
+        onToggleWatch && (
+          <button
+            type="button"
+            className={`watch-btn ${watched ? "on" : ""}`}
+            title={watched ? "Remove from watchlist" : "Add to watchlist"}
+            aria-label={watched ? `Remove ${q.symbol} from watchlist` : `Add ${q.symbol} to watchlist`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleWatch(q.symbol);
+            }}
+          >
+            <WatchIcon
+              active={!!watched}
+              title={watched ? "Remove from watchlist" : "Add to watchlist"}
+            />
+          </button>
+        )
+      )}
+    </div>
   );
 }
 
 export default function App() {
   const [symbol, setSymbol] = useState("AAPL");
-  const [range, setRange] = useState<(typeof RANGES)[number]>("6mo");
+  const [range, setRange] = useState<(typeof RANGES)[number]>("1d");
   const [board, setBoard] = useState<"gainers" | "losers" | "active">("gainers");
   const [indices, setIndices] = useState<Quote[]>([]);
+  const [watchSymbols, setWatchSymbols] = useState<string[]>(() => loadWatchlist());
   const [watch, setWatch] = useState<Quote[]>([]);
   const [movers, setMovers] = useState<Quote[]>([]);
+  const [moversLoading, setMoversLoading] = useState(false);
+  const [moversErr, setMoversErr] = useState<string | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
+  const [quoteRefreshing, setQuoteRefreshing] = useState(false);
   const [bars, setBars] = useState<Bar[]>([]);
+  const [barsLoading, setBarsLoading] = useState(false);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [ta, setTa] = useState<TA | null>(null);
   const [deep, setDeep] = useState<DeepAnalysis | null>(null);
   const [deepLoading, setDeepLoading] = useState(false);
   const [deepErr, setDeepErr] = useState<string | null>(null);
+  const [deepRequested, setDeepRequested] = useState(false);
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<
     { symbol: string; name: string; exchange?: string; change_pct?: number }[]
@@ -81,24 +158,50 @@ export default function App() {
 
   useEffect(() => {
     let live = true;
-    const load = () => {
+    const loadIndices = () => {
       api
-        .snapshot()
-        .then((s) => {
+        .indices()
+        .then((r) => {
           if (!live) return;
-          setIndices(s.indices);
-          setAsOf(s.as_of);
-          const map = { gainers: s.gainers, losers: s.losers, active: s.active };
-          setMovers(map[board]);
+          const items = r.items || [];
+          rememberQuotes(items);
+          setIndices(items);
+          setAsOf(Math.floor(Date.now() / 1000));
         })
-        .catch((e) => live && setErr(String(e.message || e)));
-      api
-        .quotes(WATCH)
-        .then((r) => live && setWatch(r.items))
         .catch(() => undefined);
     };
-    load();
-    const id = setInterval(load, 12_000);
+    loadIndices();
+    const id = setInterval(loadIndices, 30_000);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, []);
+
+  useEffect(() => {
+    let live = true;
+    setMoversLoading(true);
+    setMoversErr(null);
+    const loadMovers = () => {
+      api
+        .movers(board)
+        .then((r) => {
+          if (!live) return;
+          const items = r.items || [];
+          rememberQuotes(items);
+          setMovers(items);
+          setMoversErr(r.error || (items.length ? null : "No movers returned"));
+          setMoversLoading(false);
+        })
+        .catch((e) => {
+          if (!live) return;
+          setMovers([]);
+          setMoversErr(String(e.message || e));
+          setMoversLoading(false);
+        });
+    };
+    loadMovers();
+    const id = setInterval(loadMovers, 30_000);
     return () => {
       live = false;
       clearInterval(id);
@@ -107,19 +210,116 @@ export default function App() {
 
   useEffect(() => {
     let live = true;
+    const loadWatch = () => {
+      if (watchSymbols.length === 0) {
+        if (live) setWatch([]);
+        return;
+      }
+      api
+        .quotes(watchSymbols)
+        .then((r) => {
+          if (!live) return;
+          const items = r.items || [];
+          rememberQuotes(items);
+          setWatch(items);
+        })
+        .catch(() => live && setWatch([]));
+    };
+    loadWatch();
+    const id = setInterval(loadWatch, 30_000);
+    return () => {
+      live = false;
+      clearInterval(id);
+    };
+  }, [watchSymbols]);
+
+  useEffect(() => {
+    let live = true;
     setErr(null);
-    const loadQuote = () => {
+    setNews([]);
+    setProfile(null);
+    setTa(null);
+    setDeepRequested(false);
+    setDeep(null);
+    setDeepErr(null);
+    setDeepLoading(false);
+
+    const cached = getCachedQuote(symbol);
+    if (cached) setQuote(cached);
+    else if (quote?.symbol?.toUpperCase() !== symbol) setQuote(null);
+
+    setQuoteRefreshing(true);
+    api
+      .quote(symbol)
+      .then((q) => {
+        if (!live) return;
+        rememberQuote(q);
+        setQuote(q);
+        setQuoteRefreshing(false);
+      })
+      .catch((e) => {
+        if (!live) return;
+        if (!cached) setErr(String(e.message || e));
+        setQuoteRefreshing(false);
+      });
+
+    const quotePoll = setInterval(() => {
       api
         .quote(symbol)
-        .then((x) => live && setQuote(x))
-        .catch((e) => live && setErr(String(e.message || e)));
+        .then((x) => {
+          if (!live) return;
+          rememberQuote(x);
+          setQuote(x);
+        })
+        .catch((e) => live && !getCachedQuote(symbol) && setErr(String(e.message || e)));
+    }, 12_000);
+
+    const secondary = window.setTimeout(() => {
+      api.news(symbol).then((n) => live && setNews(n.items)).catch(() => live && setNews([]));
+      api.ta(symbol).then((t) => live && setTa(t)).catch(() => live && setTa(null));
+    }, 300);
+
+    const profileTimer = window.setTimeout(() => {
+      api.profile(symbol).then((p) => live && setProfile(p)).catch(() => live && setProfile(null));
+    }, 700);
+
+    return () => {
+      live = false;
+      clearInterval(quotePoll);
+      window.clearTimeout(secondary);
+      window.clearTimeout(profileTimer);
     };
-    loadQuote();
-    api.history(symbol, range).then((h) => live && setBars(h.bars)).catch(() => live && setBars([]));
-    api.news(symbol).then((n) => live && setNews(n.items)).catch(() => live && setNews([]));
-    api.profile(symbol).then((p) => live && setProfile(p)).catch(() => live && setProfile(null));
-    api.ta(symbol).then((t) => live && setTa(t)).catch(() => live && setTa(null));
-    setDeep(null);
+  }, [symbol]);
+
+  useEffect(() => {
+    let live = true;
+    const cached = getCachedBars(symbol, range);
+    if (cached) {
+      setBars(cached);
+      setBarsLoading(false);
+    } else {
+      setBarsLoading(true);
+    }
+
+    fetchBars(symbol, range)
+      .then((bars) => {
+        if (!live) return;
+        setBars(bars);
+        setBarsLoading(false);
+      })
+      .catch(() => {
+        if (!live) return;
+        if (!cached) setBars([]);
+        setBarsLoading(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [symbol, range]);
+
+  useEffect(() => {
+    if (!deepRequested) return;
+    let live = true;
     setDeepLoading(true);
     setDeepErr(null);
     api
@@ -134,12 +334,12 @@ export default function App() {
         setDeepErr(String(e.message || e));
         setDeepLoading(false);
       });
-    const id = setInterval(loadQuote, 8_000);
     return () => {
       live = false;
-      clearInterval(id);
     };
-  }, [symbol, range]);
+  }, [symbol, deepRequested]);
+
+  const loadDeep = () => setDeepRequested(true);
 
   useEffect(() => {
     if (!q.trim()) {
@@ -153,10 +353,31 @@ export default function App() {
   }, [q]);
 
   const rec = quote?.recommend_label || ta?.summary.RECOMMENDATION;
-  const pick = (s: string) => {
-    setSymbol(s);
-    requestAnimationFrame(() => {
-      document.getElementById("deep-analysis")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const pick = (s: string, preview?: Quote) => {
+    const sym = s.trim().toUpperCase();
+    const instant = preview ?? getCachedQuote(sym);
+    if (instant) {
+      rememberQuote(instant);
+      setQuote(instant);
+    }
+    const cachedBars = getCachedBars(sym, range);
+    if (cachedBars) setBars(cachedBars);
+    prefetchBars(sym, range);
+    setSymbol(sym);
+  };
+  const isWatched = (s: string) => watchSymbols.includes(s.trim().toUpperCase());
+  const toggleWatch = (s: string) => {
+    setWatchSymbols((prev) => {
+      const next = toggleWatchlistSymbol(prev, s);
+      saveWatchlist(next);
+      return next;
+    });
+  };
+  const removeWatch = (s: string) => {
+    setWatchSymbols((prev) => {
+      const next = removeFromWatchlist(prev, s);
+      saveWatchlist(next);
+      return next;
     });
   };
   const stats = useMemo(
@@ -181,8 +402,8 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <strong>UTOPIA TERMINAL</strong>
-          <span>US equities · TradingView + Yahoo</span>
+          <strong>Utopia Terminal</strong>
+          <span>US equities · market data</span>
         </div>
         <div className="search">
           <input
@@ -191,34 +412,50 @@ export default function App() {
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && q.trim()) {
-                setSymbol(q.trim().toUpperCase());
+                const sym = q.trim().toUpperCase();
+                const instant = getCachedQuote(sym) ?? partialFromSearch({ symbol: sym, name: sym });
+                rememberQuote(instant);
+                setQuote(instant);
+                setSymbol(sym);
                 setQ("");
                 setHits([]);
-                requestAnimationFrame(() => {
-                  document.getElementById("deep-analysis")?.scrollIntoView({ behavior: "smooth", block: "start" });
-                });
               }
             }}
           />
           {hits.length > 0 && (
             <div className="search-hits">
               {hits.map((h) => (
-                <button
-                  key={h.symbol}
-                  onClick={() => {
-                    setSymbol(h.symbol);
-                    setQ("");
-                    setHits([]);
-                    requestAnimationFrame(() => {
-                      document.getElementById("deep-analysis")?.scrollIntoView({ behavior: "smooth", block: "start" });
-                    });
-                  }}
-                >
-                  <span>
-                    <b className="sym">{h.symbol}</b> <span className="muted">{h.name}</span>
-                  </span>
-                  <span className={cls(h.change_pct)}>{pct(h.change_pct)}</span>
-                </button>
+                <div key={h.symbol} className="search-hit">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      pick(h.symbol, partialFromSearch(h));
+                      setQ("");
+                      setHits([]);
+                    }}
+                  >
+                    <span>
+                      <b className="sym">{h.symbol}</b> <span className="muted">{h.name}</span>
+                    </span>
+                    <span className={cls(h.change_pct)}>{pct(h.change_pct)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className={`watch-btn ${isWatched(h.symbol) ? "on" : ""}`}
+                    title={isWatched(h.symbol) ? "Remove from watchlist" : "Add to watchlist"}
+                    aria-label={
+                      isWatched(h.symbol)
+                        ? `Remove ${h.symbol} from watchlist`
+                        : `Add ${h.symbol} to watchlist`
+                    }
+                    onClick={() => toggleWatch(h.symbol)}
+                  >
+                    <WatchIcon
+                      active={isWatched(h.symbol)}
+                      title={isWatched(h.symbol) ? "Remove from watchlist" : "Add to watchlist"}
+                    />
+                  </button>
+                </div>
               ))}
             </div>
           )}
@@ -231,7 +468,7 @@ export default function App() {
           <button
             key={i.ticker}
             className={symbol === i.symbol ? "active" : ""}
-            onClick={() => pick(i.symbol === "VIX" ? "VIX" : i.symbol)}
+            onClick={() => pick(i.symbol === "VIX" ? "VIX" : i.symbol, i)}
           >
             <span className="sym">{i.symbol}</span>
             <span className="px">{fmt(i.price)}</span>
@@ -243,8 +480,17 @@ export default function App() {
       <div className="layout">
         <aside className="col">
           <div className="section-h">Watchlist</div>
+          {watch.length === 0 && (
+            <div className="watch-empty">Click ★ on a symbol to add it. Click × to remove.</div>
+          )}
           {watch.map((w) => (
-            <QuoteRow key={w.ticker} q={w} selected={w.symbol === symbol} onPick={pick} />
+            <QuoteRow
+              key={w.ticker}
+              q={w}
+              selected={w.symbol === symbol}
+              onPick={pick}
+              onRemoveWatch={removeWatch}
+            />
           ))}
           <div className="section-h">
             US movers
@@ -256,8 +502,21 @@ export default function App() {
               ))}
             </div>
           </div>
+          {moversLoading && movers.length === 0 && (
+            <div className="watch-empty">Loading {board}…</div>
+          )}
+          {moversErr && movers.length === 0 && !moversLoading && (
+            <div className="watch-empty movers-err">Movers unavailable. Check network or API keys.</div>
+          )}
           {movers.map((m) => (
-            <QuoteRow key={m.ticker} q={m} selected={m.symbol === symbol} onPick={pick} />
+            <QuoteRow
+              key={m.ticker}
+              q={m}
+              selected={m.symbol === symbol}
+              onPick={pick}
+              watched={isWatched(m.symbol)}
+              onToggleWatch={toggleWatch}
+            />
           ))}
         </aside>
 
@@ -265,14 +524,34 @@ export default function App() {
           {err && <div className="err">{err}</div>}
           <div className="header">
             <div>
-              <h1>{quote?.symbol || symbol}</h1>
+              <div className="title-row">
+                <h1>{quote?.symbol || symbol}</h1>
+                <button
+                  type="button"
+                  className={`watch-btn header-watch ${isWatched(symbol) ? "on" : ""}`}
+                  title={isWatched(symbol) ? "Remove from watchlist" : "Add to watchlist"}
+                  aria-label={
+                    isWatched(symbol)
+                      ? `Remove ${symbol} from watchlist`
+                      : `Add ${symbol} to watchlist`
+                  }
+                  onClick={() => toggleWatch(symbol)}
+                >
+                  <WatchIcon
+                    active={isWatched(symbol)}
+                    title={isWatched(symbol) ? "Remove from watchlist" : "Add to watchlist"}
+                  />
+                </button>
+              </div>
               <div className="name">
                 {quote?.name} {quote?.exchange ? `· ${quote.exchange}` : ""}{" "}
                 {quote?.sector ? `· ${quote.sector}` : ""}
               </div>
             </div>
             <div style={{ textAlign: "right" }}>
-              <div className={`bigpx ${cls(quote?.change_pct)}`}>{fmt(quote?.price)}</div>
+              <div className={`bigpx ${cls(quote?.change_pct)}${quoteRefreshing ? " refreshing" : ""}`}>
+                {fmt(quote?.price)}
+              </div>
               <div className={cls(quote?.change_pct)}>
                 {fmt(quote?.change)} ({pct(quote?.change_pct)})
               </div>
@@ -293,10 +572,18 @@ export default function App() {
               </div>
             ))}
           </div>
-          <div className="chart-wrap">
+          <div className={`chart-wrap${barsLoading ? " chart-loading-active" : ""}`}>
+            {barsLoading && bars.length === 0 && <div className="chart-loading">Loading chart…</div>}
             <Chart bars={bars} />
           </div>
-          <DeepPanel data={deep} loading={deepLoading} error={deepErr} />
+          <LlmAdvicePanel symbol={symbol} />
+          <DeepPanel
+            data={deep}
+            loading={deepLoading}
+            error={deepErr}
+            idle={!deepRequested}
+            onLoad={loadDeep}
+          />
         </main>
 
         <aside className="col">
