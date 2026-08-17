@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
+if [[ ! -d "$ROOT/backend/.venv" ]]; then
+  uv venv --python 3.12 "$ROOT/backend/.venv"
+fi
+uv pip install --python "$ROOT/backend/.venv/bin/python" -r "$ROOT/backend/requirements.txt"
+
+(cd "$ROOT/frontend" && npm install)
+
+"$ROOT/backend/.venv/bin/python" -m uvicorn app:app --app-dir "$ROOT/backend" --host 127.0.0.1 --port 8000 --reload &
+BACK_PID=$!
+trap 'kill $BACK_PID 2>/dev/null || true' EXIT
+
+(cd "$ROOT/frontend" && npm run dev)
