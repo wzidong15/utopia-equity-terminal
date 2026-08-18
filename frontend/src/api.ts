@@ -2,16 +2,32 @@ import type { DeepAnalysis } from "./deep";
 import type { LlmAdviceResponse } from "./llm";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
 
+function errorFromBody(text: string, fallback: string) {
+  try {
+    const body = JSON.parse(text) as { detail?: unknown };
+    if (typeof body.detail === "string" && body.detail.trim()) return body.detail;
+  } catch {
+    /* raw text */
+  }
+  return text || fallback;
+}
+
 async function getJson<T>(path: string): Promise<T> {
   const res = await fetch(path);
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(text || res.statusText);
+    throw new Error(errorFromBody(text, res.statusText));
   }
   return res.json() as Promise<T>;
 }
 
 export const api = {
+  health: () =>
+    getJson<{
+      ok: boolean;
+      polygon: boolean;
+      llm: { openai: boolean; anthropic: boolean; any: boolean };
+    }>("/api/health"),
   indices: () => getJson<{ items: Quote[] }>("/api/indices"),
   snapshot: () =>
     getJson<{
@@ -40,7 +56,7 @@ export const api = {
     fetch(`/api/llm-advice/${encodeURIComponent(symbol)}`, { method: "POST" }).then(async (res) => {
       if (!res.ok) {
         const text = await res.text();
-        throw new Error(text || res.statusText);
+        throw new Error(errorFromBody(text, res.statusText));
       }
       return res.json() as Promise<LlmAdviceResponse>;
     }),

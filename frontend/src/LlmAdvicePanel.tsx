@@ -13,6 +13,14 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<LlmAdviceResponse | null>(null);
+  const [configured, setConfigured] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    api
+      .health()
+      .then((h) => setConfigured(!!h.llm?.any))
+      .catch(() => setConfigured(null));
+  }, []);
 
   const run = () => {
     setLoading(true);
@@ -22,6 +30,7 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
       .then((r) => {
         setData(r);
         setLoading(false);
+        setConfigured(true);
       })
       .catch((e) => {
         setError(String(e.message || e));
@@ -45,14 +54,26 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
             Uses quote, fundamentals, insiders, options, news, and macro (SPY, QQQ, DIA, IWM, VIX).
           </div>
         </div>
-        <button type="button" className="llm-btn" onClick={run} disabled={loading}>
+        <button type="button" className="llm-btn" onClick={run} disabled={loading || configured === false}>
           {loading ? "Analyzing…" : "Generate suggestion"}
         </button>
       </div>
 
       {error && <div className="err llm-err">{error}</div>}
 
-      {!advice && !loading && !error && (
+      {!advice && !loading && !error && configured === false && (
+        <div className="llm-placeholder">
+          No LLM key loaded. Add one line to the repo-root <code>.env</code>, then restart{" "}
+          <code>./start.sh</code>:
+          <pre>
+            OPENAI_API_KEY=sk-…
+            # or
+            ANTHROPIC_API_KEY=sk-ant-…
+          </pre>
+        </div>
+      )}
+
+      {!advice && !loading && !error && configured !== false && (
         <div className="llm-placeholder">
           Click <strong>Generate suggestion</strong> to send the current stock context to an LLM (OpenAI or
           Claude). Requires <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> in <code>.env</code>.

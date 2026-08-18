@@ -31,11 +31,14 @@ function cls(n?: number | null) {
   if (n == null) return "";
   return n >= 0 ? "up" : "down";
 }
-function badgeClass(label?: string | null) {
-  if (!label) return "badge";
-  if (label.includes("BUY")) return "badge buy";
-  if (label.includes("SELL")) return "badge sell";
-  return "badge neutral";
+function taBadgeClass(label?: string | null) {
+  if (!label) return "badge ta-neutral";
+  const u = label.toUpperCase();
+  if (u.includes("STRONG BUY") || u.includes("STRONG_BUY")) return "badge ta-strong-buy";
+  if (u.includes("BUY")) return "badge ta-buy";
+  if (u.includes("STRONG SELL") || u.includes("STRONG_SELL")) return "badge ta-strong-sell";
+  if (u.includes("SELL")) return "badge ta-sell";
+  return "badge ta-neutral";
 }
 
 function WatchIcon({ active, title }: { active: boolean; title: string }) {
@@ -460,7 +463,16 @@ export default function App() {
             </div>
           )}
         </div>
-        {rec && <span className={badgeClass(rec)}>{rec}</span>}
+        {rec && (
+          <div
+            className="rec-chip"
+            title={`TradingView daily technical rating for ${quote?.symbol || symbol}`}
+          >
+            <span className="rec-chip-sym">{quote?.symbol || symbol}</span>
+            <span className={taBadgeClass(rec)}>{rec.replace(/_/g, " ")}</span>
+            <span className="rec-chip-src">Daily TA</span>
+          </div>
+        )}
       </header>
 
       <nav className="strip">
@@ -592,7 +604,9 @@ export default function App() {
             <div className="stats" style={{ gridTemplateColumns: "1fr 1fr", padding: "0 12px 10px" }}>
               <div className="stat">
                 <div className="k">Summary</div>
-                <div className="v">{ta.summary.RECOMMENDATION ?? "—"}</div>
+                <div className={`v ${taBadgeClass(ta.summary.RECOMMENDATION)}`}>
+                  {(ta.summary.RECOMMENDATION ?? "—").replace(/_/g, " ")}
+                </div>
               </div>
               <div className="stat">
                 <div className="k">Buy / Neutral / Sell</div>

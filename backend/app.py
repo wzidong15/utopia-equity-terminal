@@ -97,17 +97,6 @@ RANGE_TO_YF = {
     "5y": ("5y", "1wk"),
 }
 
-# Yahoo v8 chart API uses the same range keys; interval must match Yahoo's allowed set.
-RANGE_TO_YAHOO_CHART = {
-    "1d": ("1d", "1m"),
-    "5d": ("5d", "5m"),
-    "1mo": ("1mo", "30m"),
-    "3mo": ("3mo", "1d"),
-    "6mo": ("6mo", "1d"),
-    "1y": ("1y", "1d"),
-    "5y": ("5y", "1wk"),
-}
-
 _cache: dict[str, tuple[float, Any]] = {}
 
 
@@ -138,7 +127,6 @@ def _clean(v: Any) -> Any:
 
 YAHOO_UA = "Mozilla/5.0 (compatible; UtopiaEquityTerminal/1.0)"
 QUOTE_HTTP_TIMEOUT = float(os.environ.get("UTOPIA_QUOTE_HTTP_TIMEOUT", "6"))
-CHART_HTTP_TIMEOUT = float(os.environ.get("UTOPIA_CHART_HTTP_TIMEOUT", "8"))
 TV_SCAN_HEADERS = {
     "accept": "application/json",
     "content-type": "application/json",
@@ -542,119 +530,17 @@ def _yahoo_quote(symbol: str) -> dict[str, Any]:
     raise RuntimeError(f"Yahoo quote unavailable for {symbol.strip().upper().split(':')[-1]}")
 
 
-def _yahoo_chart_quote(symbol: str) -> dict[str, Any]:
-    ticker_sym = _yahoo_ticker_symbol(symbol)
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_sym}"
-    body = _http_json(
-        "GET",
-        url,
-        params={"interval": "1d", "range": "5d", "includePrePost": "false"},
-        timeout=QUOTE_HTTP_TIMEOUT,
-    )
-    results = (body.get("chart") or {}).get("result") or []
-    if not results:
-        raise RuntimeError("Yahoo chart returned no data")
-    meta = results[0].get("meta") or {}
-    live = _clean(meta.get("regularMarketPrice"))
-    prev = _clean(meta.get("previousClose") or meta.get("chartPreviousClose"))
-    price = live or prev
-    if price is None:
-        indicators = results[0].get("indicators") or {}
-        quote = (indicators.get("quote") or [{}])[0]
-        for c in reversed(quote.get("close") or []):
-            if c is not None:
-                price = _clean(c)
-                break
-    if price is None:
-        raise RuntimeError("Yahoo chart has no close price")
-    delay = "yahoo" if live is not None else "previous_close"
-    return _make_quote(
-        symbol,
-        price=price,
-        prev=prev if live is not None else None,
-        source="yahoo-chart",
-        delay=delay,
-        name=_clean(meta.get("shortName") or meta.get("symbol")),
-        exchange=_clean(meta.get("exchangeName")),
-    )
-
-
-def _yahoo_chart_bars(symbol: str, range: str) -> dict[str, Any]:
-    if range not in RANGE_TO_YAHOO_CHART:
-        raise ValueError(f"unsupported range {range}")
-    ticker_sym = _yahoo_ticker_symbol(symbol)
-    yahoo_range, interval = RANGE_TO_YAHOO_CHART[range]
-    params = {
-        "interval": interval,
-        "range": yahoo_range,
-        "includePrePost": "false",
-    }
-    body = None
-    errors: list[str] = []
-    for host in ("query1.finance.yahoo.com", "query2.finance.yahoo.com"):
-        try:
-            body = _http_json(
-                "GET",
-                f"https://{host}/v8/finance/chart/{ticker_sym}",
-                params=params,
-                timeout=CHART_HTTP_TIMEOUT,
-            )
-            break
-        except Exception as e:
-            errors.append(f"{host}: {e}")
-    if body is None:
-        raise RuntimeError("; ".join(errors) if errors else "Yahoo chart unreachable")
-    results = (body.get("chart") or {}).get("result") or []
-    if not results:
-        raise RuntimeError("Yahoo chart returned no data")
-    r0 = results[0]
-    timestamps = r0.get("timestamp") or []
-    q = ((r0.get("indicators") or {}).get("quote") or [{}])[0]
-    opens = q.get("open") or []
-    highs = q.get("high") or []
-    lows = q.get("low") or []
-    closes = q.get("close") or []
-    volumes = q.get("volume") or []
-    bars: list[dict[str, Any]] = []
-    for i, ts in enumerate(timestamps):
-        close = _clean(closes[i] if i < len(closes) else None)
-        if close is None:
-            continue
-        bars.append(
-            {
-                "time": int(ts),
-                "open": _clean(opens[i] if i < len(opens) else None),
-                "high": _clean(highs[i] if i < len(highs) else None),
-                "low": _clean(lows[i] if i < len(lows) else None),
-                "close": close,
-                "volume": _clean(volumes[i] if i < len(volumes) else None),
-            }
-        )
-    if not bars:
-        raise RuntimeError("Yahoo chart has no bars")
-    return {
-        "symbol": ticker_sym,
-        "interval": interval,
-        "range": range,
-        "source": "yahoo-chart",
-        "bars": bars,
-    }
-
-
 def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
     period, interval = RANGE_TO_YF[range]
     yf_sym = _yahoo_ticker_symbol(symbol)
-    t = yf.Ticker(yf_sym)
-    df = t.history(period=period, interval=interval, auto_adjust=True)
-    if df is None or df.empty:
-        df = yf.download(
-            yf_sym,
-            period=period,
-            interval=interval,
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-        )
+    df = yf.download(
+        yf_sym,
+        period=period,
+        interval=interval,
+        auto_adjust=True,
+        progress=False,
+        threads=False,
+    )
     if df is None or df.empty:
         raise RuntimeError(f"No history for {symbol}")
     if isinstance(df.columns, pd.MultiIndex):
@@ -684,19 +570,6 @@ def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
         "source": "yfinance",
         "bars": bars,
     }
-
-
-def _fetch_history_bars(symbol: str, range: str) -> dict[str, Any]:
-    errors: list[str] = []
-    for label, fn in (
-        ("yahoo-chart", lambda: _yahoo_chart_bars(symbol, range)),
-        ("yfinance", lambda: _yfinance_history_bars(symbol, range)),
-    ):
-        try:
-            return fn()
-        except Exception as e:
-            errors.append(f"{label}: {e}")
-    raise RuntimeError("; ".join(errors) if errors else "History unavailable")
 
 
 def _yahoo_download_close(symbol: str) -> dict[str, Any]:
@@ -908,10 +781,9 @@ def _best_quote(symbol: str) -> dict[str, Any]:
     attempts.extend(
         [
             ("tradingview", _tv_quote),
-            ("yahoo-chart", _yahoo_chart_quote),
-            ("stooq", _stooq_quote),
-            ("yfinance", _yahoo_quote),
             ("yfinance-close", _yahoo_download_close),
+            ("yfinance", _yahoo_quote),
+            ("stooq", _stooq_quote),
         ]
     )
 
@@ -1190,7 +1062,7 @@ def history(symbol: str, range: str = "6mo"):
     cache_sym = "^VIX" if yf_sym == "VIX" else yf_sym
 
     def fetch():
-        return _fetch_history_bars(symbol, range)
+        return _yfinance_history_bars(symbol, range)
 
     ttl = {"1d": 30, "5d": 45}.get(range, 120)
     try:

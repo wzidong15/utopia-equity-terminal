@@ -386,6 +386,59 @@ button { cursor: pointer; }
   background: var(--panel);
 }
 
+.rec-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+.rec-chip-sym {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-weight: 600;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+.rec-chip-src {
+  color: #8250df;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.badge.ta-strong-buy {
+  color: #6639ba;
+  border-color: rgba(130, 80, 223, 0.45);
+  background: #fbefff;
+}
+.badge.ta-buy {
+  color: #8250df;
+  border-color: rgba(130, 80, 223, 0.3);
+  background: #f6f0ff;
+}
+.badge.ta-neutral {
+  color: #6e7781;
+  border-color: #d0d7de;
+  background: #f6f8fa;
+}
+.badge.ta-sell {
+  color: #bc4c00;
+  border-color: rgba(188, 76, 0, 0.3);
+  background: #fff1e5;
+}
+.badge.ta-strong-sell {
+  color: #9a3412;
+  border-color: rgba(154, 52, 18, 0.4);
+  background: #ffd8b5;
+}
+
+.stat .v.badge {
+  display: inline-block;
+  margin-top: 6px;
+  width: fit-content;
+}
+
 .news a {
   display: block;
   padding: 10px 14px;
@@ -556,6 +609,17 @@ button { cursor: pointer; }
   color: var(--muted);
   font-size: 13px;
   line-height: 1.5;
+}
+.llm-placeholder pre {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
 }
 .llm-placeholder code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;

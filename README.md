@@ -61,8 +61,8 @@ A free Polygon plan may still reject some snapshot endpoints (`NOT_AUTHORIZED`).
 
 | Panel | Source |
 |---|---|
-| Quotes / indices / watchlist | Polygon snapshot (if keyed) → TradingView scanner → Yahoo chart → Stooq → yfinance |
-| Charts | Yahoo Finance chart API, then yfinance |
+| Quotes / indices / watchlist | Polygon snapshot (if keyed) → TradingView scanner → yfinance download → Yahoo ticker → Stooq |
+| Charts | Yahoo Finance `yf.download` |
 | Movers | TradingView scanner, then Polygon gainers/losers if keyed |
 | Daily TA | tradingview-ta |
 | Profile, news, insiders, options, analyst targets | Yahoo Finance (`yfinance`) |
