@@ -8,6 +8,7 @@ import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
 import { loadWatchlist, removeFromWatchlist, saveWatchlist, toggleWatchlistSymbol } from "./watchlist";
 import { getCachedQuote, partialFromSearch, rememberQuote, rememberQuotes } from "./quoteCache";
 import { fetchBars, getCachedBars, prefetchBars } from "./chartCache";
+import { LIVE_REFRESH_MS } from "./config";
 const RANGES = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"] as const;
 
 function fmt(n?: number | null, d = 2) {
@@ -151,7 +152,6 @@ export default function App() {
   const [deep, setDeep] = useState<DeepAnalysis | null>(null);
   const [deepLoading, setDeepLoading] = useState(false);
   const [deepErr, setDeepErr] = useState<string | null>(null);
-  const [deepRequested, setDeepRequested] = useState(false);
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<
     { symbol: string; name: string; exchange?: string; change_pct?: number }[]
@@ -242,10 +242,6 @@ export default function App() {
     setNews([]);
     setProfile(null);
     setTa(null);
-    setDeepRequested(false);
-    setDeep(null);
-    setDeepErr(null);
-    setDeepLoading(false);
 
     const cached = getCachedQuote(symbol);
     if (cached) setQuote(cached);
@@ -275,7 +271,7 @@ export default function App() {
           setQuote(x);
         })
         .catch((e) => live && !getCachedQuote(symbol) && setErr(String(e.message || e)));
-    }, 12_000);
+    }, LIVE_REFRESH_MS);
 
     const secondary = window.setTimeout(() => {
       api.news(symbol).then((n) => live && setNews(n.items)).catch(() => live && setNews([]));
@@ -315,16 +311,27 @@ export default function App() {
         if (!cached) setBars([]);
         setBarsLoading(false);
       });
+
+    const chartPoll = setInterval(() => {
+      fetchBars(symbol, range, { force: true })
+        .then((next) => {
+          if (!live) return;
+          setBars(next);
+        })
+        .catch(() => undefined);
+    }, LIVE_REFRESH_MS);
+
     return () => {
       live = false;
+      clearInterval(chartPoll);
     };
   }, [symbol, range]);
 
   useEffect(() => {
-    if (!deepRequested) return;
     let live = true;
-    setDeepLoading(true);
+    setDeep(null);
     setDeepErr(null);
+    setDeepLoading(true);
     api
       .deep(symbol)
       .then((d) => {
@@ -340,9 +347,7 @@ export default function App() {
     return () => {
       live = false;
     };
-  }, [symbol, deepRequested]);
-
-  const loadDeep = () => setDeepRequested(true);
+  }, [symbol]);
 
   useEffect(() => {
     if (!q.trim()) {
@@ -589,13 +594,7 @@ export default function App() {
             <Chart bars={bars} />
           </div>
           <LlmAdvicePanel symbol={symbol} />
-          <DeepPanel
-            data={deep}
-            loading={deepLoading}
-            error={deepErr}
-            idle={!deepRequested}
-            onLoad={loadDeep}
-          />
+          <DeepPanel data={deep} loading={deepLoading} error={deepErr} />
         </main>
 
         <aside className="col">

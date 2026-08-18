@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { LIVE_REFRESH_MS } from "./config";
 import type { Bar } from "./types";
 
 type Entry = { bars: Bar[]; at: number };
@@ -6,13 +7,11 @@ type Entry = { bars: Bar[]; at: number };
 const cache = new Map<string, Entry>();
 const inflight = new Map<string, Promise<Bar[]>>();
 
-const TTL_MS: Record<string, number> = {
-  "1d": 30_000,
-  "5d": 45_000,
-};
-
 function ttlFor(range: string) {
-  return TTL_MS[range] ?? 120_000;
+  const fresh = Math.max(1000, Math.round(LIVE_REFRESH_MS * 0.4));
+  if (range === "1d" || range === "5d") return fresh;
+  if (range === "1mo") return Math.max(fresh, Math.round(LIVE_REFRESH_MS * 0.8));
+  return Math.max(LIVE_REFRESH_MS, 15_000);
 }
 
 function key(symbol: string, range: string) {
@@ -34,11 +33,13 @@ export function rememberBars(symbol: string, range: string, bars: Bar[]) {
   cache.set(key(symbol, range), { bars, at: Date.now() });
 }
 
-export function fetchBars(symbol: string, range: string): Promise<Bar[]> {
+export function fetchBars(symbol: string, range: string, opts?: { force?: boolean }): Promise<Bar[]> {
   const sym = symbol.trim().toUpperCase();
   const k = key(sym, range);
-  const cached = getCachedBars(sym, range);
-  if (cached) return Promise.resolve(cached);
+  if (!opts?.force) {
+    const cached = getCachedBars(sym, range);
+    if (cached) return Promise.resolve(cached);
+  }
 
   const pending = inflight.get(k);
   if (pending) return pending;

@@ -1,1 +1,10 @@
 /// <reference types="vite/client" />
+
+interface ImportMetaEnv {
+  readonly VITE_LIVE_REFRESH_SEC?: string;
+  readonly UTOPIA_LIVE_REFRESH_SEC?: string;
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}

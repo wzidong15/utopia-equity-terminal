@@ -11,6 +11,8 @@ fi
 
 # macOS: fix outbound TCP Errno 49 when automatic source address selection breaks
 export UTOPIA_BIND_INTERFACE="${UTOPIA_BIND_INTERFACE:-en0}"
+export UTOPIA_LIVE_REFRESH_SEC="${UTOPIA_LIVE_REFRESH_SEC:-10}"
+export VITE_LIVE_REFRESH_SEC="${VITE_LIVE_REFRESH_SEC:-$UTOPIA_LIVE_REFRESH_SEC}"
 
 if [[ ! -d "$ROOT/backend/.venv" ]]; then
   uv venv --python 3.12 "$ROOT/backend/.venv"

@@ -28,30 +28,11 @@ export default function DeepPanel({
   data,
   loading,
   error,
-  onLoad,
-  idle,
 }: {
   data: DeepAnalysis | null;
   loading: boolean;
   error?: string | null;
-  onLoad?: () => void;
-  idle?: boolean;
 }) {
-  if (idle && !data && !loading && !error) {
-    return (
-      <section className="deep" id="deep-analysis">
-        <div className="section-h">Deep analysis</div>
-        <div className="llm-placeholder">
-          Optional — loads insiders, options, Congress, and forecast on demand.
-          <div style={{ marginTop: 10 }}>
-            <button type="button" className="llm-btn" onClick={onLoad}>
-              Load deep analysis
-            </button>
-          </div>
-        </div>
-      </section>
-    );
-  }
   if (loading) {
     return (
       <section className="deep" id="deep-analysis">

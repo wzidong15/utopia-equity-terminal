@@ -100,6 +100,20 @@ RANGE_TO_YF = {
 _cache: dict[str, tuple[float, Any]] = {}
 
 
+def _live_refresh_sec() -> float:
+    raw = (os.environ.get("UTOPIA_LIVE_REFRESH_SEC") or "10").strip()
+    try:
+        sec = float(raw)
+    except ValueError:
+        sec = 10.0
+    return max(2.0, min(sec, 300.0))
+
+
+def _live_cache_ttl() -> float:
+    """Shorter than the UI poll so /api/quote and /api/history are not served stale."""
+    return max(1.0, _live_refresh_sec() * 0.4)
+
+
 def _cached(key: str, ttl: float, fn):
     now = time.time()
     hit = _cache.get(key)
@@ -964,7 +978,7 @@ def quote(symbol: str):
         return _best_quote(symbol)
 
     try:
-        return _cached(f"quote:{symbol.upper()}", 12, fetch)
+        return _cached(f"quote:{symbol.upper()}", _live_cache_ttl(), fetch)
     except Exception as e:
         raise HTTPException(502, f"Quote failed: {e}") from e
 
@@ -1064,7 +1078,10 @@ def history(symbol: str, range: str = "6mo"):
     def fetch():
         return _yfinance_history_bars(symbol, range)
 
-    ttl = {"1d": 30, "5d": 45}.get(range, 120)
+    fresh = _live_cache_ttl()
+    ttl = {"1d": fresh, "5d": fresh, "1mo": max(fresh, _live_refresh_sec() * 0.8)}.get(
+        range, max(15.0, _live_refresh_sec())
+    )
     try:
         return _cached(f"hist:{cache_sym}:{range}", ttl, fetch)
     except HTTPException:

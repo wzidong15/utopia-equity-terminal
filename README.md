@@ -48,6 +48,7 @@ cp .env.example .env
 
 | Variable | Purpose |
 |---|---|
+| `UTOPIA_LIVE_REFRESH_SEC` | Selected ticker **price + chart** poll interval in seconds (default `10`). News and Daily TA stay on-demand. |
 | `POLYGON_API_KEY` or `MASSIVE_API_KEY` | Last-trade snapshots (realtime when the plan allows) |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM suggestion (default model `gpt-4.1`) |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | LLM suggestion (default `claude-opus-4-20250514`) |
