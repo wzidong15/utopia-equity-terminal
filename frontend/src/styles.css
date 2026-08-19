@@ -685,7 +685,7 @@ button { cursor: pointer; }
   border-radius: var(--radius);
   font-size: 13px;
 }
-.pf-form label {
+.pf-form label, .pf-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -706,7 +706,77 @@ button { cursor: pointer; }
   color: var(--text);
 }
 .pf-check input { width: auto; }
-.pf-hint { padding: 0 2px; font-size: 12px; line-height: 1.4; }
+.pf-hint { padding: 0 2px; font-size: 12px; line-height: 1.4; font-weight: 500; text-transform: none; letter-spacing: 0; }
+.pf-search { display: flex; flex-direction: column; gap: 6px; text-transform: none; letter-spacing: 0; font-weight: 400; font-size: 13px; color: var(--text); }
+.pf-hits {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  max-height: 220px;
+  overflow: auto;
+  background: var(--bg);
+}
+.pf-hit {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--line-muted);
+  color: var(--text);
+  padding: 8px 10px;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+}
+.pf-hit:last-child { border-bottom: 0; }
+.pf-hit:hover { background: var(--panel); }
+.pf-hit-left {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.pf-hit-left .muted {
+  font-size: 11px;
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pf-hit-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.pf-quote {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  background: var(--panel);
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+}
+.pf-quote-name {
+  font-size: 12px;
+  color: var(--text);
+}
+.pf-quote-px {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 2px 0 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 16px;
+  font-weight: 600;
+}
 .pf-chart { height: 220px; min-height: 180px; }
 .nav-chart { height: 100%; min-height: 180px; }
 .pf-table {

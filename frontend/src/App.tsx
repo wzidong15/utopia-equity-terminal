@@ -413,7 +413,7 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <strong>Utopia Terminal</strong>
-          <span>US equities · paper portfolios</span>
+          <span>US equities · stock portfolio</span>
         </div>
         <div className="view-tabs">
           <button type="button" className={view === "research" ? "on" : ""} onClick={() => setView("research")}>
@@ -424,7 +424,7 @@ export default function App() {
             className={view === "portfolios" ? "on" : ""}
             onClick={() => setView("portfolios")}
           >
-            Portfolios
+            Stock portfolio
           </button>
         </div>
         <div className="search">
@@ -665,8 +665,8 @@ export default function App() {
       )}
       <footer className="foot">
         <span>
-          Quotes: TradingView scanner (unsigned ≈ 15m delay). Charts/news: Yahoo Finance. Portfolios
-          are paper trading only. Not financial advice.
+          Quotes: TradingView scanner (unsigned ≈ 15m delay). Charts/news: Yahoo Finance. Stock
+          portfolio is paper shares only — no options. Not financial advice.
         </span>
         <span>{asOf ? new Date(asOf * 1000).toLocaleTimeString() : ""}</span>
       </footer>

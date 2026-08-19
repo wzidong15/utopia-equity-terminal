@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import { api } from "./api";
 import { CHART_REFRESH_MS } from "./config";
 import NavChart from "./NavChart";
+import SymbolSearch from "./SymbolSearch";
 import {
   STRATEGY_OPTIONS,
   type Portfolio,
   type PortfolioStrategyKind,
   type PortfolioSummary,
 } from "./portfolio";
+import type { Quote } from "./types";
 
 function money(n?: number | null) {
   if (n == null || Number.isNaN(n)) return "—";
@@ -39,6 +41,7 @@ export default function PortfolioPanel({
   const [tradeSide, setTradeSide] = useState<"buy" | "sell">("buy");
   const [tradeQty, setTradeQty] = useState("");
   const [tradeNotional, setTradeNotional] = useState("");
+  const [tradeQuote, setTradeQuote] = useState<Quote | null>(null);
   const [stratKind, setStratKind] = useState<PortfolioStrategyKind>("manual");
   const [stratAuto, setStratAuto] = useState(false);
   const [stratSym, setStratSym] = useState("SPY");
@@ -105,7 +108,7 @@ export default function PortfolioPanel({
   };
 
   const remove = (id: string) => {
-    if (!window.confirm("Delete this paper portfolio?")) return;
+    if (!window.confirm("Delete this stock portfolio?")) return;
     api
       .deletePortfolio(id)
       .then(() => {
@@ -178,7 +181,7 @@ export default function PortfolioPanel({
   return (
     <div className="layout pf-layout">
       <aside className="col">
-        <div className="section-h">Paper portfolios</div>
+        <div className="section-h">Stock portfolios</div>
         <div className="pf-create">
           <input
             value={name}
@@ -198,7 +201,10 @@ export default function PortfolioPanel({
           </button>
         </div>
         {items.length === 0 && (
-          <div className="watch-empty">Create a fund with a name and starting cash to paper-trade.</div>
+          <div className="watch-empty">
+            Create a stock portfolio with a name and starting cash. US stocks and ETFs only — options
+            are not supported.
+          </div>
         )}
         {items.map((p) => (
           <div key={p.id} className={`row ${p.id === selectedId ? "sel" : ""}`}>
@@ -224,15 +230,15 @@ export default function PortfolioPanel({
 
       <main className="center">
         {err && <div className="err">{err}</div>}
-        {!detail && <div className="watch-empty">Select or create a portfolio.</div>}
+        {!detail && <div className="watch-empty">Select or create a stock portfolio.</div>}
         {detail && (
           <>
             <div className="header">
               <div>
                 <h1>{detail.name}</h1>
                 <div className="name">
-                  Started {money(detail.initial_cash)} · cash {money(detail.cash)} · paper trading, not a
-                  broker
+                  Started {money(detail.initial_cash)} · cash {money(detail.cash)} · stock shares only,
+                  no options
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -313,12 +319,21 @@ export default function PortfolioPanel({
       </main>
 
       <aside className="col">
-        <div className="section-h">Simulate a trade</div>
+        <div className="section-h">Simulate a stock trade</div>
         <div className="pf-form">
-          <label>
-            Ticker
-            <input value={tradeSym} onChange={(e) => setTradeSym(e.target.value.toUpperCase())} />
-          </label>
+          <div className="pf-field">
+            Ticker (stock / ETF)
+            <SymbolSearch value={tradeSym} onChange={setTradeSym} onQuote={setTradeQuote} />
+          </div>
+          {tradeQuote?.price ? (
+            <div className="muted pf-hint">
+              {tradeQty.trim() && Number(tradeQty) > 0
+                ? `≈ ${money(Number(tradeQty) * tradeQuote.price)} for ${tradeQty} shares`
+                : tradeNotional.trim() && Number(tradeNotional) > 0
+                  ? `≈ ${(Number(tradeNotional) / tradeQuote.price).toFixed(2)} shares`
+                  : `Last ${money(tradeQuote.price)}`}
+            </div>
+          ) : null}
           <div className="tabs">
             {(["buy", "sell"] as const).map((s) => (
               <button key={s} className={tradeSide === s ? "on" : ""} onClick={() => setTradeSide(s)}>
@@ -343,8 +358,9 @@ export default function PortfolioPanel({
             />
           </label>
           <button type="button" className="llm-btn" onClick={submitTrade} disabled={busy || !detail}>
-            Place paper order
+            Place stock order
           </button>
+          <div className="muted pf-hint">US stocks and ETFs only. Options are not supported.</div>
         </div>
 
         <div className="section-h">Quant strategy</div>
@@ -364,10 +380,10 @@ export default function PortfolioPanel({
           </label>
           {hint && <div className="muted pf-hint">{hint}</div>}
           {stratKind !== "momentum" && (
-            <label>
+            <div className="pf-field">
               Symbol
-              <input value={stratSym} onChange={(e) => setStratSym(e.target.value.toUpperCase())} />
-            </label>
+              <SymbolSearch value={stratSym} onChange={setStratSym} />
+            </div>
           )}
           {stratKind !== "manual" && (
             <label className="pf-check">

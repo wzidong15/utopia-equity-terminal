@@ -36,6 +36,15 @@ async function sendJson<T>(path: string, method: string, body?: unknown): Promis
   return res.json() as Promise<T>;
 }
 
+export type SearchHit = {
+  symbol: string;
+  name: string;
+  exchange?: string;
+  type?: string;
+  price?: number;
+  change_pct?: number;
+};
+
 export const api = {
   health: () =>
     getJson<{
@@ -75,10 +84,7 @@ export const api = {
       }
       return res.json() as Promise<LlmAdviceResponse>;
     }),
-  search: (q: string) =>
-    getJson<{
-      items: { symbol: string; name: string; exchange?: string; price?: number; change_pct?: number }[];
-    }>(`/api/search?q=${encodeURIComponent(q)}`),
+  search: (q: string) => getJson<{ items: SearchHit[] }>(`/api/search?q=${encodeURIComponent(q)}`),
   portfolios: () => getJson<{ items: PortfolioSummary[] }>("/api/portfolios"),
   portfolio: (id: string) => getJson<Portfolio>(`/api/portfolios/${encodeURIComponent(id)}`),
   createPortfolio: (name: string, amount: number) =>

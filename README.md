@@ -1,8 +1,8 @@
 # Utopia US Equity Terminal
 
-Local US-stock research terminal: quotes, charts, movers, watchlist, paper portfolios, and optional LLM / heuristic analysis.
+Local US-stock research terminal: quotes, charts, movers, watchlist, a stock portfolio simulator, and optional LLM / heuristic analysis.
 
-Open [http://localhost:5173](http://localhost:5173) after starting the app. Click a ticker (or search) to load its quote and chart. Use **Portfolios** to create a paper fund (name + starting dollars), simulate trades, or attach a simple automatic strategy. Deep analysis loads when you select a stock. LLM suggestions run when you click Generate.
+Open [http://localhost:5173](http://localhost:5173) after starting the app. Click a ticker (or search) to load its quote and chart. Use **Stock portfolio** to create a paper fund (name + starting dollars), simulate share trades, or attach a simple automatic strategy. Options are not supported. Deep analysis loads when you select a stock. LLM suggestions run when you click Generate.
 
 This is a research UI, not a broker. **Not financial advice.** Data can be delayed, incomplete, or wrong.
 
@@ -13,7 +13,7 @@ This is a research UI, not a broker. **Not financial advice.** Data can be delay
 - Search by ticker or name
 - OHLCV chart; default range is **1D** (`1d` / `5d` / `1mo` / `3mo` / `6mo` / `1y` / `5y`)
 - Daily TradingView technical rating, Yahoo news, and company profile
-- **Paper portfolios**: create a fund (name + starting dollars), place simulated buy/sell orders, attach buy-and-hold / SMA crossover / momentum / RSI strategies, and track NAV, P/L, drawdown, and a trade log. Auto strategies try a step every hour while `./start.sh` is running. Not a broker.
+- **Stock portfolio simulation**: virtual funds that buy and sell **shares** of US stocks and ETFs, with optional auto strategies and live NAV / P/L (see below). No options. Not a broker.
 - **Deep analysis**: insider Form 4 flow, option volume / put-call, Senate and House PTRs, analyst targets, headlines, and a heuristic stance (`ACCUMULATE` … `AVOID`)
 - **LLM suggestion** (Generate suggestion): BUY / SELL / LONG CALL / LONG PUT with macro context (SPY, QQQ, DIA, IWM, VIX) via OpenAI or Anthropic
 
@@ -36,6 +36,29 @@ chmod +x start.sh
 `start.sh` loads `.env` if present, creates `backend/.venv`, installs Python and npm deps, starts FastAPI on port 8000 (`--host ::`), then Vite on 5173 (Vite proxies `/api` to the backend).
 
 On macOS, `start.sh` sets `UTOPIA_BIND_INTERFACE=en0` so outbound HTTPS can bind to Wi-Fi when automatic source-address selection fails (`Errno 49` / “Can't assign requested address”). Override with `UTOPIA_BIND_INTERFACE=` or `UTOPIA_BIND_IP=`.
+
+## Stock portfolio simulation
+
+The **Stock portfolio** tab is a local paper-trading sandbox for **US stocks and ETFs**. It does not support options (calls, puts, or spreads). Nothing is sent to a broker. Fills use the same quote stack as the research UI (Polygon if keyed, otherwise delayed public feeds).
+
+1. Open **Stock portfolio** in the header.
+2. Create a fund with a name and starting cash (for example `100000`).
+3. Place simulated **buy** / **sell** share orders by quantity or dollar amount, or attach an automatic strategy and turn **Auto** on.
+4. Watch NAV, cash, unrealized P/L, max drawdown, the NAV chart, holdings, and the trade log.
+
+Performance (NAV chart and marked-to-market P/L) refreshes every 30 seconds (`UTOPIA_CHART_REFRESH_SEC`). Auto strategies try a step every hour while `./start.sh` is running (`UTOPIA_STRATEGY_INTERVAL_SEC`, default `3600`). Use **Run one step now** to force a strategy tick immediately.
+
+| Strategy | What it does |
+|---|---|
+| Manual | You place paper buy/sell orders in shares (no options). |
+| Buy & hold | Invests remaining cash in one ticker and holds. |
+| SMA crossover | Buys when SMA20 > SMA50; sells on a cross down. |
+| Momentum | Rotates into the top 3 US gainers, equal weight. |
+| RSI mean reversion | Buys ~25% of cash when RSI < 30; sells when RSI > 70. |
+
+Funds are stored in `backend/data/portfolios.json` on this machine (gitignored). Deleting a fund in the UI removes it. Restarting the app does not reset paper cash or trades.
+
+This is research / simulation only, and **shares only** (no options). **Not financial advice.** You can lose real money if you copy these ideas in a live account.
 
 ## Optional keys
 
@@ -72,6 +95,7 @@ A free Polygon plan may still reject some snapshot endpoints (`NOT_AUTHORIZED`).
 | Profile, news, insiders, options, analyst targets | Yahoo Finance (`yfinance`) |
 | Senate / House trades | [congressinvests.com](https://congressinvests.com) public ticker feed |
 | LLM suggestion | OpenAI or Anthropic (only when a key is set and you click Generate) |
+| Paper stock-portfolio marks / fills | Same quote stack as `/api/quote`; SMA strategies use Yahoo `yf.download` history |
 
 Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
 
@@ -93,7 +117,7 @@ Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
 | `GET /api/search?q=` | Symbol search |
 | `GET /api/deep/{symbol}` | Insiders, options, Congress, news, forecast, heuristic suggestion |
 | `POST /api/llm-advice/{symbol}` | LLM BUY/SELL/LONG CALL/LONG PUT |
-| `GET /api/portfolios` | Paper portfolio summaries (marked to market) |
+| `GET /api/portfolios` | Stock portfolio summaries (marked to market) |
 | `POST /api/portfolios` | Create fund `{name, amount}` |
 | `GET /api/portfolios/{id}` | Holdings, trades, NAV snapshots |
 | `DELETE /api/portfolios/{id}` | Delete fund |
@@ -105,7 +129,8 @@ Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
 
 ```
 backend/app.py          FastAPI app
-backend/portfolios.py  Paper portfolios and strategies
+backend/portfolios.py  Stock portfolio simulation (shares only, no options)
+backend/data/          Local paper-fund JSON (gitignored)
 backend/llm_advice.py   OpenAI / Anthropic calls
 backend/requirements.txt
 frontend/               Vite + React + Lightweight Charts

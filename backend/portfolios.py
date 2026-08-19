@@ -1,4 +1,4 @@
-"""Paper portfolios: create a fund, simulate trades, run simple quant strategies, track NAV."""
+"""Stock portfolios: paper funds that buy/sell shares (no options), run simple strategies, track NAV."""
 
 from __future__ import annotations
 

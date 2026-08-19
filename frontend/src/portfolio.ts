@@ -75,7 +75,7 @@ export type PortfolioSummary = {
 };
 
 export const STRATEGY_OPTIONS: { id: PortfolioStrategyKind; label: string; hint: string }[] = [
-  { id: "manual", label: "Manual", hint: "You place paper buy/sell orders." },
+  { id: "manual", label: "Manual", hint: "You place paper buy/sell orders in shares (no options)." },
   { id: "buy_hold", label: "Buy & hold", hint: "Automatically invest cash in one ticker and hold." },
   { id: "sma_cross", label: "SMA crossover", hint: "Buy when SMA20 > SMA50; sell when it crosses down." },
   { id: "momentum", label: "Momentum", hint: "Rotate into the top 3 US gainers (equal weight)." },

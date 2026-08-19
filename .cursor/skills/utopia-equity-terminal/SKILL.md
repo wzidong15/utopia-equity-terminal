@@ -42,7 +42,7 @@ Do not claim unsigned TV/Yahoo quotes are exchange-realtime. UI footer must stay
 | `GET /api/search?q=` | Symbol search |
 | `GET /api/deep/{symbol}` | Insider (Yahoo Form 4), options (next 3 expiries), Congress (congressinvests.com), news, forecast, research stance |
 | `GET /api/snapshot` | Dashboard bundle |
-| `GET/POST /api/portfolios` | Paper funds |
+| `GET/POST /api/portfolios` | Stock paper funds (shares only, no options) |
 | `POST /api/portfolios/{id}/orders` | Simulated trades |
 | `PUT /api/portfolios/{id}/strategy` | Manual or auto quant strategy |
 | `POST /api/portfolios/{id}/tick` | Mark-to-market / auto step |
