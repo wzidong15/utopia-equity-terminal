@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import threading
@@ -393,12 +394,26 @@ def _strat_rsi(p: dict[str, Any], prices: dict[str, float], symbol: str) -> str:
     return f"RSI {rsi:.1f}, hold"
 
 
-def _enrich(p: dict[str, Any]) -> dict[str, Any]:
+def _symbols(p: dict[str, Any]) -> list[str]:
     symbols = list((p.get("holdings") or {}).keys())
     st_sym = ((p.get("strategy") or {}).get("symbol") or "").upper()
     if st_sym:
         symbols.append(st_sym)
-    prices = _price_map(symbols)
+    return symbols
+
+
+def _holding_prices(p: dict[str, Any]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for sym, h in (p.get("holdings") or {}).items():
+        px = h.get("last_price")
+        if isinstance(px, (int, float)) and px > 0:
+            out[str(sym).upper()] = float(px)
+    return out
+
+
+def _enrich(p: dict[str, Any], prices: dict[str, float] | None = None) -> dict[str, Any]:
+    if prices is None:
+        prices = {**_holding_prices(p), **_price_map(_symbols(p))}
     nav = _nav(p, prices)
     initial = float(p.get("initial_cash") or 0) or 1.0
     pnl = _money(nav - initial)
@@ -446,8 +461,8 @@ def _enrich(p: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _summary(p: dict[str, Any]) -> dict[str, Any]:
-    e = _enrich(p)
+def _summary(p: dict[str, Any], prices: dict[str, float] | None = None) -> dict[str, Any]:
+    e = _enrich(p, prices)
     return {
         "id": e["id"],
         "name": e["name"],
@@ -467,13 +482,8 @@ def _summary(p: dict[str, Any]) -> dict[str, Any]:
 @router.get("")
 def list_portfolios():
     with _lock:
-        store = _load()
-        items = []
-        for p in store.get("portfolios") or []:
-            e = _summary(p)
-            _snapshot(p, e["nav"])
-            items.append(e)
-        _save(store)
+        copies = [copy.deepcopy(p) for p in (_load().get("portfolios") or [])]
+    items = [_summary(p, _holding_prices(p)) for p in copies]
     items.sort(key=lambda x: -(x.get("updated_at") or 0))
     return {"items": items}
 
@@ -507,14 +517,25 @@ def create_portfolio(body: CreateBody):
 
 
 @router.get("/{pid}")
-def get_portfolio(pid: str):
+def get_portfolio(pid: str, live: bool = True):
     with _lock:
-        store = _load()
-        p = _find(store, pid)
-        out = _enrich(p)
-        _snapshot(p, out["nav"])
-        _save(store)
-        return _enrich(p)
+        p = copy.deepcopy(_find(_load(), pid))
+    prices = _holding_prices(p)
+    if live:
+        prices = {**prices, **_price_map(_symbols(p))}
+    out = _enrich(p, prices)
+    if live:
+        with _lock:
+            store = _load()
+            cur = _find(store, pid)
+            _snapshot(cur, out["nav"])
+            holdings = cur.get("holdings") or {}
+            for sym, px in prices.items():
+                h = holdings.get(sym)
+                if h:
+                    h["last_price"] = _money(px)
+            _save(store)
+    return out
 
 
 @router.delete("/{pid}")
@@ -554,7 +575,7 @@ def place_order(pid: str, body: OrderBody):
         out = _enrich(p)
         _snapshot(p, out["nav"], force=True)
         _save(store)
-        return _enrich(p)
+        return out
 
 
 @router.put("/{pid}/strategy")

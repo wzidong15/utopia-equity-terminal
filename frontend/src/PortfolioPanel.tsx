@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { CHART_REFRESH_MS } from "./config";
 import NavChart from "./NavChart";
@@ -25,6 +25,25 @@ function cls(n?: number | null) {
   return n >= 0 ? "up" : "down";
 }
 
+function stubFromSummary(s: PortfolioSummary): Portfolio {
+  return {
+    id: s.id,
+    name: s.name,
+    initial_cash: s.initial_cash,
+    cash: s.cash,
+    nav: s.nav,
+    pnl: s.pnl,
+    return_pct: s.return_pct,
+    created_at: s.created_at,
+    updated_at: s.updated_at,
+    holdings: [],
+    trades: [],
+    snapshots: [],
+    strategy: s.strategy,
+    last_error: s.last_error,
+  };
+}
+
 export default function PortfolioPanel({
   onOpenSymbol,
 }: {
@@ -45,6 +64,46 @@ export default function PortfolioPanel({
   const [stratKind, setStratKind] = useState<PortfolioStrategyKind>("manual");
   const [stratAuto, setStratAuto] = useState(false);
   const [stratSym, setStratSym] = useState("SPY");
+  const cacheRef = useRef(new Map<string, Portfolio>());
+
+  const applyPortfolio = (p: Portfolio) => {
+    cacheRef.current.set(p.id, p);
+    setDetail(p);
+    setStratKind(p.strategy?.kind || "manual");
+    setStratAuto(!!p.strategy?.auto);
+    setStratSym(p.strategy?.symbol || "SPY");
+    if ((p.snapshots?.length || 0) > 0 || (p.holdings?.length || 0) > 0) {
+      setItems((prev) =>
+        prev.map((x) =>
+          x.id === p.id
+            ? {
+                ...x,
+                nav: p.nav,
+                cash: p.cash,
+                pnl: p.pnl,
+                return_pct: p.return_pct,
+                strategy: p.strategy,
+                updated_at: p.updated_at,
+                holdings_count: p.holdings?.length ?? x.holdings_count,
+                last_error: p.last_error,
+              }
+            : x,
+        ),
+      );
+    }
+  };
+
+  const pickFund = (id: string) => {
+    setSelectedId(id);
+    setErr(null);
+    const cached = cacheRef.current.get(id);
+    if (cached) {
+      applyPortfolio(cached);
+      return;
+    }
+    const summary = items.find((x) => x.id === id);
+    if (summary) applyPortfolio(stubFromSummary(summary));
+  };
 
   const loadList = () =>
     api
@@ -67,20 +126,15 @@ export default function PortfolioPanel({
       return;
     }
     let live = true;
-    const pull = () => {
-      api
-        .portfolio(selectedId)
-        .then((p) => {
-          if (!live) return;
-          setDetail(p);
-          setStratKind(p.strategy?.kind || "manual");
-          setStratAuto(!!p.strategy?.auto);
-          setStratSym(p.strategy?.symbol || "SPY");
-        })
-        .catch((e) => live && setErr(String(e.message || e)));
+    const accept = (p: Portfolio) => {
+      if (!live || p.id !== selectedId) return;
+      applyPortfolio(p);
     };
-    pull();
-    const id = setInterval(pull, CHART_REFRESH_MS);
+    api.portfolio(selectedId, { live: false }).then(accept).catch((e) => live && setErr(String(e.message || e)));
+    api.portfolio(selectedId).then(accept).catch(() => undefined);
+    const id = setInterval(() => {
+      api.portfolio(selectedId).then(accept).catch(() => undefined);
+    }, CHART_REFRESH_MS);
     return () => {
       live = false;
       clearInterval(id);
@@ -100,7 +154,7 @@ export default function PortfolioPanel({
       .then((p) => {
         setName("");
         setSelectedId(p.id);
-        setDetail(p);
+        applyPortfolio(p);
         return loadList();
       })
       .catch((e) => setErr(String(e.message || e)))
@@ -112,7 +166,11 @@ export default function PortfolioPanel({
     api
       .deletePortfolio(id)
       .then(() => {
-        if (selectedId === id) setSelectedId(null);
+        cacheRef.current.delete(id);
+        if (selectedId === id) {
+          setSelectedId(null);
+          setDetail(null);
+        }
         return loadList();
       })
       .catch((e) => setErr(String(e.message || e)));
@@ -136,7 +194,7 @@ export default function PortfolioPanel({
         notional,
       })
       .then((p) => {
-        setDetail(p);
+        applyPortfolio(p);
         setTradeQty("");
         setTradeNotional("");
         return loadList();
@@ -156,7 +214,7 @@ export default function PortfolioPanel({
         symbol: stratSym.trim().toUpperCase() || "SPY",
       })
       .then((p) => {
-        setDetail(p);
+        applyPortfolio(p);
         return loadList();
       })
       .catch((e) => setErr(String(e.message || e)))
@@ -169,7 +227,7 @@ export default function PortfolioPanel({
     api
       .tickPortfolio(selectedId, true)
       .then((p) => {
-        setDetail(p);
+        applyPortfolio(p);
         return loadList();
       })
       .catch((e) => setErr(String(e.message || e)))
@@ -177,6 +235,8 @@ export default function PortfolioPanel({
   };
 
   const hint = STRATEGY_OPTIONS.find((s) => s.id === stratKind)?.hint;
+  const fundName =
+    (detail?.id === selectedId && detail?.name) || items.find((x) => x.id === selectedId)?.name || null;
 
   return (
     <div className="layout pf-layout">
@@ -208,7 +268,7 @@ export default function PortfolioPanel({
         )}
         {items.map((p) => (
           <div key={p.id} className={`row ${p.id === selectedId ? "sel" : ""}`}>
-            <button type="button" className="row-main" onClick={() => setSelectedId(p.id)}>
+            <button type="button" className="row-main" onClick={() => pickFund(p.id)}>
               <span className="sym">{p.name}</span>
               <span>
                 <div className="px">{money(p.nav)}</div>
@@ -319,6 +379,18 @@ export default function PortfolioPanel({
       </main>
 
       <aside className="col">
+        <div className="pf-active">
+          <div className="pf-active-k">Trading in</div>
+          <div className="pf-active-name">{fundName || "No stock portfolio selected"}</div>
+          {detail && detail.id === selectedId && (
+            <div className="muted">
+              Cash {money(detail.cash)} · NAV {money(detail.nav)}
+              {detail.strategy?.kind && detail.strategy.kind !== "manual"
+                ? ` · ${detail.strategy.kind}`
+                : " · manual"}
+            </div>
+          )}
+        </div>
         <div className="section-h">Simulate a stock trade</div>
         <div className="pf-form">
           <div className="pf-field">
@@ -358,7 +430,7 @@ export default function PortfolioPanel({
             />
           </label>
           <button type="button" className="llm-btn" onClick={submitTrade} disabled={busy || !detail}>
-            Place stock order
+            {fundName ? `Place stock order in ${fundName}` : "Place stock order"}
           </button>
           <div className="muted pf-hint">US stocks and ETFs only. Options are not supported.</div>
         </div>
@@ -392,7 +464,7 @@ export default function PortfolioPanel({
             </label>
           )}
           <button type="button" className="llm-btn" onClick={saveStrategy} disabled={busy || !detail}>
-            Save strategy
+            {fundName ? `Save strategy for ${fundName}` : "Save strategy"}
           </button>
           {stratKind !== "manual" && (
             <button type="button" className="ghost-btn" onClick={runNow} disabled={busy || !detail}>

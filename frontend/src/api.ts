@@ -86,7 +86,10 @@ export const api = {
     }),
   search: (q: string) => getJson<{ items: SearchHit[] }>(`/api/search?q=${encodeURIComponent(q)}`),
   portfolios: () => getJson<{ items: PortfolioSummary[] }>("/api/portfolios"),
-  portfolio: (id: string) => getJson<Portfolio>(`/api/portfolios/${encodeURIComponent(id)}`),
+  portfolio: (id: string, opts?: { live?: boolean }) =>
+    getJson<Portfolio>(
+      `/api/portfolios/${encodeURIComponent(id)}${opts?.live === false ? "?live=false" : ""}`,
+    ),
   createPortfolio: (name: string, amount: number) =>
     sendJson<Portfolio>("/api/portfolios", "POST", { name, amount }),
   deletePortfolio: (id: string) =>
