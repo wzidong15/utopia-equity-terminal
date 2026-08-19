@@ -12,6 +12,7 @@ Local US-stock visualization app in this repo. Not OpenBB Workspace.
 - Backend: `backend/app.py` (FastAPI, port 8000)
 - Frontend: `frontend/` (Vite React, port 5173, proxies `/api`)
 - Run: `./start.sh` (loads repo-root `.env` if present)
+- Quote poll: `UTOPIA_LIVE_REFRESH_SEC` (default 10). Chart + portfolio NAV: `UTOPIA_CHART_REFRESH_SEC` (default 30).
 
 ## Data source priority
 
@@ -41,6 +42,10 @@ Do not claim unsigned TV/Yahoo quotes are exchange-realtime. UI footer must stay
 | `GET /api/search?q=` | Symbol search |
 | `GET /api/deep/{symbol}` | Insider (Yahoo Form 4), options (next 3 expiries), Congress (congressinvests.com), news, forecast, research stance |
 | `GET /api/snapshot` | Dashboard bundle |
+| `GET/POST /api/portfolios` | Paper funds |
+| `POST /api/portfolios/{id}/orders` | Simulated trades |
+| `PUT /api/portfolios/{id}/strategy` | Manual or auto quant strategy |
+| `POST /api/portfolios/{id}/tick` | Mark-to-market / auto step |
 
 ## UI conventions
 

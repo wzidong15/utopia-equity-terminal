@@ -1,5 +1,6 @@
 import type { DeepAnalysis } from "./deep";
 import type { LlmAdviceResponse } from "./llm";
+import type { Portfolio, PortfolioStrategyKind, PortfolioSummary } from "./portfolio";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
 
 function errorFromBody(text: string, fallback: string) {
@@ -18,6 +19,20 @@ async function getJson<T>(path: string): Promise<T> {
     const text = await res.text();
     throw new Error(errorFromBody(text, res.statusText));
   }
+  return res.json() as Promise<T>;
+}
+
+async function sendJson<T>(path: string, method: string, body?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(errorFromBody(text, res.statusText));
+  }
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -64,4 +79,23 @@ export const api = {
     getJson<{
       items: { symbol: string; name: string; exchange?: string; price?: number; change_pct?: number }[];
     }>(`/api/search?q=${encodeURIComponent(q)}`),
+  portfolios: () => getJson<{ items: PortfolioSummary[] }>("/api/portfolios"),
+  portfolio: (id: string) => getJson<Portfolio>(`/api/portfolios/${encodeURIComponent(id)}`),
+  createPortfolio: (name: string, amount: number) =>
+    sendJson<Portfolio>("/api/portfolios", "POST", { name, amount }),
+  deletePortfolio: (id: string) =>
+    sendJson<{ ok: boolean }>(`/api/portfolios/${encodeURIComponent(id)}`, "DELETE"),
+  portfolioOrder: (
+    id: string,
+    body: { symbol: string; side: "buy" | "sell"; shares?: number; notional?: number },
+  ) => sendJson<Portfolio>(`/api/portfolios/${encodeURIComponent(id)}/orders`, "POST", body),
+  setPortfolioStrategy: (
+    id: string,
+    body: { kind: PortfolioStrategyKind; auto: boolean; symbol: string },
+  ) => sendJson<Portfolio>(`/api/portfolios/${encodeURIComponent(id)}/strategy`, "PUT", body),
+  tickPortfolio: (id: string, force = false) =>
+    sendJson<Portfolio>(
+      `/api/portfolios/${encodeURIComponent(id)}/tick${force ? "?force=true" : ""}`,
+      "POST",
+    ),
 };

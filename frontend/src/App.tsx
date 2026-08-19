@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import Chart from "./Chart";
+import PortfolioPanel from "./PortfolioPanel";
 import DeepPanel from "./DeepPanel";
 import LlmAdvicePanel from "./LlmAdvicePanel";
 import type { DeepAnalysis } from "./deep";
@@ -8,7 +9,7 @@ import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
 import { loadWatchlist, removeFromWatchlist, saveWatchlist, toggleWatchlistSymbol } from "./watchlist";
 import { getCachedQuote, partialFromSearch, rememberQuote, rememberQuotes } from "./quoteCache";
 import { fetchBars, getCachedBars, prefetchBars } from "./chartCache";
-import { LIVE_REFRESH_MS } from "./config";
+import { CHART_REFRESH_MS, LIVE_REFRESH_MS } from "./config";
 const RANGES = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"] as const;
 
 function fmt(n?: number | null, d = 2) {
@@ -158,6 +159,7 @@ export default function App() {
   >([]);
   const [err, setErr] = useState<string | null>(null);
   const [asOf, setAsOf] = useState<number | null>(null);
+  const [view, setView] = useState<"research" | "portfolios">("research");
 
   useEffect(() => {
     let live = true;
@@ -319,7 +321,7 @@ export default function App() {
           setBars(next);
         })
         .catch(() => undefined);
-    }, LIVE_REFRESH_MS);
+    }, CHART_REFRESH_MS);
 
     return () => {
       live = false;
@@ -411,7 +413,19 @@ export default function App() {
       <header className="topbar">
         <div className="brand">
           <strong>Utopia Terminal</strong>
-          <span>US equities · market data</span>
+          <span>US equities · paper portfolios</span>
+        </div>
+        <div className="view-tabs">
+          <button type="button" className={view === "research" ? "on" : ""} onClick={() => setView("research")}>
+            Research
+          </button>
+          <button
+            type="button"
+            className={view === "portfolios" ? "on" : ""}
+            onClick={() => setView("portfolios")}
+          >
+            Portfolios
+          </button>
         </div>
         <div className="search">
           <input
@@ -427,6 +441,7 @@ export default function App() {
                 setSymbol(sym);
                 setQ("");
                 setHits([]);
+                setView("research");
               }
             }}
           />
@@ -440,6 +455,7 @@ export default function App() {
                       pick(h.symbol, partialFromSearch(h));
                       setQ("");
                       setHits([]);
+                      setView("research");
                     }}
                   >
                     <span>
@@ -480,6 +496,8 @@ export default function App() {
         )}
       </header>
 
+      {view === "research" && (
+        <>
       <nav className="strip">
         {indices.map((i) => (
           <button
@@ -635,10 +653,20 @@ export default function App() {
           )}
         </aside>
       </div>
+        </>
+      )}
+      {view === "portfolios" && (
+        <PortfolioPanel
+          onOpenSymbol={(s) => {
+            pick(s);
+            setView("research");
+          }}
+        />
+      )}
       <footer className="foot">
         <span>
-          Quotes: TradingView scanner (unsigned ≈ 15m delay). Charts/news: Yahoo Finance. Not
-          financial advice.
+          Quotes: TradingView scanner (unsigned ≈ 15m delay). Charts/news: Yahoo Finance. Portfolios
+          are paper trading only. Not financial advice.
         </span>
         <span>{asOf ? new Date(asOf * 1000).toLocaleTimeString() : ""}</span>
       </footer>

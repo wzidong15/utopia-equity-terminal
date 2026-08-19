@@ -109,9 +109,23 @@ def _live_refresh_sec() -> float:
     return max(2.0, min(sec, 300.0))
 
 
+def _chart_refresh_sec() -> float:
+    raw = (os.environ.get("UTOPIA_CHART_REFRESH_SEC") or "30").strip()
+    try:
+        sec = float(raw)
+    except ValueError:
+        sec = 30.0
+    return max(2.0, min(sec, 3600.0))
+
+
 def _live_cache_ttl() -> float:
-    """Shorter than the UI poll so /api/quote and /api/history are not served stale."""
+    """Shorter than the UI poll so /api/quote is not served stale."""
     return max(1.0, _live_refresh_sec() * 0.4)
+
+
+def _chart_cache_ttl() -> float:
+    """Shorter than the chart poll so /api/history is not served stale."""
+    return max(1.0, _chart_refresh_sec() * 0.4)
 
 
 def _cached(key: str, ttl: float, fn):
@@ -1078,9 +1092,9 @@ def history(symbol: str, range: str = "6mo"):
     def fetch():
         return _yfinance_history_bars(symbol, range)
 
-    fresh = _live_cache_ttl()
-    ttl = {"1d": fresh, "5d": fresh, "1mo": max(fresh, _live_refresh_sec() * 0.8)}.get(
-        range, max(15.0, _live_refresh_sec())
+    fresh = _chart_cache_ttl()
+    ttl = {"1d": fresh, "5d": fresh, "1mo": max(fresh, _chart_refresh_sec() * 0.8)}.get(
+        range, max(15.0, _chart_refresh_sec())
     )
     try:
         return _cached(f"hist:{cache_sym}:{range}", ttl, fetch)
@@ -1763,3 +1777,14 @@ def snapshot():
         return _cached("snapshot", 15, fetch)
     except Exception as e:
         raise HTTPException(502, f"Snapshot failed: {e}") from e
+
+
+import portfolios as portfolio_mod
+
+portfolio_mod.configure(
+    quote=_best_quote,
+    quotes=_best_quotes,
+    history=_yfinance_history_bars,
+    movers=_fetch_movers_items,
+)
+app.include_router(portfolio_mod.router)

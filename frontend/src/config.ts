@@ -1,11 +1,20 @@
-/** Selected-ticker price + chart poll interval. News and Daily TA stay on-demand. */
+/** Selected-ticker quote poll. News and Daily TA stay on-demand. */
 
-function readRefreshSec(): number {
-  const raw = import.meta.env.VITE_LIVE_REFRESH_SEC ?? import.meta.env.UTOPIA_LIVE_REFRESH_SEC ?? "10";
+function readSec(raw: string | undefined, fallback: number, min = 2, max = 3600): number {
   const sec = Number(raw);
-  if (!Number.isFinite(sec) || sec < 2) return 10;
-  return Math.min(sec, 300);
+  if (!Number.isFinite(sec) || sec < min) return fallback;
+  return Math.min(sec, max);
 }
 
-export const LIVE_REFRESH_SEC = readRefreshSec();
+export const LIVE_REFRESH_SEC = readSec(
+  import.meta.env.VITE_LIVE_REFRESH_SEC ?? import.meta.env.UTOPIA_LIVE_REFRESH_SEC,
+  10,
+);
 export const LIVE_REFRESH_MS = LIVE_REFRESH_SEC * 1000;
+
+/** Stock charts, NAV chart, and portfolio performance. */
+export const CHART_REFRESH_SEC = readSec(
+  import.meta.env.VITE_CHART_REFRESH_SEC ?? import.meta.env.UTOPIA_CHART_REFRESH_SEC,
+  30,
+);
+export const CHART_REFRESH_MS = CHART_REFRESH_SEC * 1000;

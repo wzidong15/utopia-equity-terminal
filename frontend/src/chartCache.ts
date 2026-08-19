@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { LIVE_REFRESH_MS } from "./config";
+import { CHART_REFRESH_MS } from "./config";
 import type { Bar } from "./types";
 
 type Entry = { bars: Bar[]; at: number };
@@ -8,10 +8,10 @@ const cache = new Map<string, Entry>();
 const inflight = new Map<string, Promise<Bar[]>>();
 
 function ttlFor(range: string) {
-  const fresh = Math.max(1000, Math.round(LIVE_REFRESH_MS * 0.4));
+  const fresh = Math.max(1000, Math.round(CHART_REFRESH_MS * 0.4));
   if (range === "1d" || range === "5d") return fresh;
-  if (range === "1mo") return Math.max(fresh, Math.round(LIVE_REFRESH_MS * 0.8));
-  return Math.max(LIVE_REFRESH_MS, 15_000);
+  if (range === "1mo") return Math.max(fresh, Math.round(CHART_REFRESH_MS * 0.8));
+  return Math.max(CHART_REFRESH_MS, 15_000);
 }
 
 function key(symbol: string, range: string) {

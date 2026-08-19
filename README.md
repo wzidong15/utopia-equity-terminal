@@ -1,8 +1,8 @@
 # Utopia US Equity Terminal
 
-Local US-stock research terminal: quotes, charts, movers, watchlist, and optional LLM / heuristic analysis.
+Local US-stock research terminal: quotes, charts, movers, watchlist, paper portfolios, and optional LLM / heuristic analysis.
 
-Open [http://localhost:5173](http://localhost:5173) after starting the app. Click a ticker (or search) to load its quote and chart. Deep analysis and LLM suggestions are on demand — they do not run until you click the buttons.
+Open [http://localhost:5173](http://localhost:5173) after starting the app. Click a ticker (or search) to load its quote and chart. Use **Portfolios** to create a paper fund (name + starting dollars), simulate trades, or attach a simple automatic strategy. Deep analysis loads when you select a stock. LLM suggestions run when you click Generate.
 
 This is a research UI, not a broker. **Not financial advice.** Data can be delayed, incomplete, or wrong.
 
@@ -13,7 +13,8 @@ This is a research UI, not a broker. **Not financial advice.** Data can be delay
 - Search by ticker or name
 - OHLCV chart; default range is **1D** (`1d` / `5d` / `1mo` / `3mo` / `6mo` / `1y` / `5y`)
 - Daily TradingView technical rating, Yahoo news, and company profile
-- **Deep analysis** (Load deep analysis): insider Form 4 flow, option volume / put-call, Senate and House PTRs, analyst targets, headlines, and a heuristic stance (`ACCUMULATE` … `AVOID`)
+- **Paper portfolios**: create a fund (name + starting dollars), place simulated buy/sell orders, attach buy-and-hold / SMA crossover / momentum / RSI strategies, and track NAV, P/L, drawdown, and a trade log. Auto strategies try a step every hour while `./start.sh` is running. Not a broker.
+- **Deep analysis**: insider Form 4 flow, option volume / put-call, Senate and House PTRs, analyst targets, headlines, and a heuristic stance (`ACCUMULATE` … `AVOID`)
 - **LLM suggestion** (Generate suggestion): BUY / SELL / LONG CALL / LONG PUT with macro context (SPY, QQQ, DIA, IWM, VIX) via OpenAI or Anthropic
 
 Clicking a stock shows the header quote immediately when the ticker is already on the strip, watchlist, or movers. Charts and quotes cache briefly so switching back is faster.
@@ -48,7 +49,9 @@ cp .env.example .env
 
 | Variable | Purpose |
 |---|---|
-| `UTOPIA_LIVE_REFRESH_SEC` | Selected ticker **price + chart** poll interval in seconds (default `10`). News and Daily TA stay on-demand. |
+| `UTOPIA_LIVE_REFRESH_SEC` | Selected ticker **price** poll interval in seconds (default `10`). News and Daily TA stay on-demand. |
+| `UTOPIA_CHART_REFRESH_SEC` | Stock charts, NAV chart, and portfolio performance poll in seconds (default `30`). |
+| `UTOPIA_STRATEGY_INTERVAL_SEC` | How often auto paper strategies try a step while the server is up (default `3600` = 1 hour). |
 | `POLYGON_API_KEY` or `MASSIVE_API_KEY` | Last-trade snapshots (realtime when the plan allows) |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM suggestion (default model `gpt-4.1`) |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | LLM suggestion (default `claude-opus-4-20250514`) |
@@ -90,11 +93,19 @@ Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
 | `GET /api/search?q=` | Symbol search |
 | `GET /api/deep/{symbol}` | Insiders, options, Congress, news, forecast, heuristic suggestion |
 | `POST /api/llm-advice/{symbol}` | LLM BUY/SELL/LONG CALL/LONG PUT |
+| `GET /api/portfolios` | Paper portfolio summaries (marked to market) |
+| `POST /api/portfolios` | Create fund `{name, amount}` |
+| `GET /api/portfolios/{id}` | Holdings, trades, NAV snapshots |
+| `DELETE /api/portfolios/{id}` | Delete fund |
+| `POST /api/portfolios/{id}/orders` | Paper buy/sell (`shares` or `notional`) |
+| `PUT /api/portfolios/{id}/strategy` | `manual` / `buy_hold` / `sma_cross` / `momentum` / `rsi_reversion` |
+| `POST /api/portfolios/{id}/tick` | Mark to market; run auto strategy if enabled |
 
 ## Repo layout
 
 ```
 backend/app.py          FastAPI app
+backend/portfolios.py  Paper portfolios and strategies
 backend/llm_advice.py   OpenAI / Anthropic calls
 backend/requirements.txt
 frontend/               Vite + React + Lightweight Charts
