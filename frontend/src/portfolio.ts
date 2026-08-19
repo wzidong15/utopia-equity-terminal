@@ -57,6 +57,7 @@ export type Portfolio = {
   strategy?: PortfolioStrategy;
   last_error?: string | null;
   tick_note?: string | null;
+  mark_session?: "pre" | "rth" | "post" | "closed" | string;
 };
 
 export type PortfolioSummary = {

@@ -51,6 +51,13 @@ export const api = {
       ok: boolean;
       polygon: boolean;
       llm: { openai: boolean; anthropic: boolean; any: boolean };
+      market?: {
+        session: string;
+        label: string;
+        hours: string;
+        time_et: string;
+        tz: string;
+      };
     }>("/api/health"),
   indices: () => getJson<{ items: Quote[] }>("/api/indices"),
   snapshot: () =>
@@ -85,7 +92,10 @@ export const api = {
       return res.json() as Promise<LlmAdviceResponse>;
     }),
   search: (q: string) => getJson<{ items: SearchHit[] }>(`/api/search?q=${encodeURIComponent(q)}`),
-  portfolios: () => getJson<{ items: PortfolioSummary[] }>("/api/portfolios"),
+  portfolios: (opts?: { live?: boolean }) =>
+    getJson<{ items: PortfolioSummary[] }>(
+      `/api/portfolios${opts?.live ? "?live=true" : ""}`,
+    ),
   portfolio: (id: string, opts?: { live?: boolean }) =>
     getJson<Portfolio>(
       `/api/portfolios/${encodeURIComponent(id)}${opts?.live === false ? "?live=false" : ""}`,

@@ -387,6 +387,10 @@ button { cursor: pointer; }
   opacity: 0.55;
   transition: opacity 0.15s ease;
 }
+.chart-note {
+  padding: 0 4px 4px;
+  font-size: 11px;
+}
 .chart {
   height: 100%;
   min-height: 320px;
@@ -422,26 +426,58 @@ button { cursor: pointer; }
   background: var(--panel);
 }
 
-.rec-chip {
+.session-chip {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0;
   margin-left: auto;
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg);
+  line-height: 1.2;
+  min-width: 148px;
 }
-.rec-chip-sym {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-weight: 600;
-  font-size: 13px;
-  letter-spacing: 0.02em;
+.session-name {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
 }
-.rec-chip-src {
-  color: #8250df;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.session-time {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
 }
+.session-hours { font-size: 10px; }
+.session-chip.session-pre {
+  background: #fff8c5;
+  border-color: #d4a72c;
+}
+.session-chip.session-pre .session-name { color: #7d4e00; }
+.session-chip.session-pre .session-time { color: #9a6700; }
+.session-chip.session-pre .session-hours { color: #9a6700; }
+.session-chip.session-rth {
+  background: #dafbe1;
+  border-color: #4ac26b;
+}
+.session-chip.session-rth .session-name { color: #0f5132; }
+.session-chip.session-rth .session-time { color: #1a7f37; }
+.session-chip.session-rth .session-hours { color: #1a7f37; }
+.session-chip.session-post {
+  background: #ddf4ff;
+  border-color: #54aeff;
+}
+.session-chip.session-post .session-name { color: #0550ae; }
+.session-chip.session-post .session-time { color: #0969da; }
+.session-chip.session-post .session-hours { color: #218bff; }
+.session-chip.session-closed {
+  background: #f6f8fa;
+  border-color: #d0d7de;
+}
+.session-chip.session-closed .session-name { color: #656d76; }
+.session-chip.session-closed .session-time { color: #57606a; }
+.session-chip.session-closed .session-hours { color: #8c959f; }
 
 .badge.ta-strong-buy {
   color: #6639ba;

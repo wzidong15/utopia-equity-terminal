@@ -1,5 +1,6 @@
 import { api } from "./api";
 import { CHART_REFRESH_MS } from "./config";
+import { marketClock } from "./marketSession";
 import type { Bar } from "./types";
 
 type Entry = { bars: Bar[]; at: number };
@@ -15,7 +16,9 @@ function ttlFor(range: string) {
 }
 
 function key(symbol: string, range: string) {
-  return `${symbol.trim().toUpperCase()}:${range}`;
+  const sess = marketClock().session;
+  const ext = (range === "1d" || range === "5d" || range === "1mo") && sess !== "rth";
+  return `${symbol.trim().toUpperCase()}:${range}:${ext ? "ext" : "rth"}`;
 }
 
 export function getCachedBars(symbol: string, range: string): Bar[] | undefined {

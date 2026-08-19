@@ -10,6 +10,7 @@ import { loadWatchlist, removeFromWatchlist, saveWatchlist, toggleWatchlistSymbo
 import { getCachedQuote, partialFromSearch, rememberQuote, rememberQuotes } from "./quoteCache";
 import { fetchBars, getCachedBars, prefetchBars } from "./chartCache";
 import { CHART_REFRESH_MS, LIVE_REFRESH_MS } from "./config";
+import { marketClock } from "./marketSession";
 const RANGES = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"] as const;
 
 function fmt(n?: number | null, d = 2) {
@@ -41,6 +42,24 @@ function taBadgeClass(label?: string | null) {
   if (u.includes("STRONG SELL") || u.includes("STRONG_SELL")) return "badge ta-strong-sell";
   if (u.includes("SELL")) return "badge ta-sell";
   return "badge ta-neutral";
+}
+
+function SessionClock() {
+  const [clock, setClock] = useState(() => marketClock());
+  useEffect(() => {
+    const id = window.setInterval(() => setClock(marketClock()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  return (
+    <div
+      className={`session-chip session-${clock.session}`}
+      title={`US cash session (${clock.hours})`}
+    >
+      <span className="session-name">{clock.label}</span>
+      <span className="session-time">{clock.timeEt}</span>
+      <span className="session-hours">{clock.hours}</span>
+    </div>
+  );
 }
 
 function WatchIcon({ active, title }: { active: boolean; title: string }) {
@@ -131,6 +150,21 @@ function QuoteRow({
       )}
     </div>
   );
+}
+
+function applyLiveLast(bars: Bar[], quote: Quote | null, symbol: string): Bar[] {
+  if (!quote || quote.price == null || !Number.isFinite(quote.price) || bars.length === 0) return bars;
+  const qsym = (quote.symbol || quote.ticker || "").toUpperCase().split(":").pop();
+  if (qsym && qsym !== symbol.trim().toUpperCase()) return bars;
+  const px = quote.price;
+  const last = bars[bars.length - 1];
+  const sess =
+    quote.session === "pre" || quote.session === "post" || quote.session === "rth"
+      ? quote.session
+      : last.session;
+  const high = last.high != null ? Math.max(last.high, px) : px;
+  const low = last.low != null ? Math.min(last.low, px) : px;
+  return [...bars.slice(0, -1), { ...last, close: px, high, low, session: sess || last.session }];
 }
 
 export default function App() {
@@ -362,7 +396,6 @@ export default function App() {
     return () => clearTimeout(t);
   }, [q]);
 
-  const rec = quote?.recommend_label || ta?.summary.RECOMMENDATION;
   const pick = (s: string, preview?: Quote) => {
     const sym = s.trim().toUpperCase();
     const instant = preview ?? getCachedQuote(sym);
@@ -392,6 +425,8 @@ export default function App() {
   };
   const stats = useMemo(
     () => [
+      ["Close", fmt(quote?.regular_close)],
+      ["Prev close", fmt(quote?.prev_close)],
       ["Open", fmt(quote?.open)],
       ["High", fmt(quote?.high)],
       ["Low", fmt(quote?.low)],
@@ -407,12 +442,13 @@ export default function App() {
     ],
     [quote],
   );
+  const chartBars = useMemo(() => applyLiveLast(bars, quote, symbol), [bars, quote, symbol]);
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <strong>Utopia Terminal</strong>
+          <strong>Fintopia</strong>
           <span>US equities · stock portfolio</span>
         </div>
         <div className="view-tabs">
@@ -484,16 +520,7 @@ export default function App() {
             </div>
           )}
         </div>
-        {rec && (
-          <div
-            className="rec-chip"
-            title={`TradingView daily technical rating for ${quote?.symbol || symbol}`}
-          >
-            <span className="rec-chip-sym">{quote?.symbol || symbol}</span>
-            <span className={taBadgeClass(rec)}>{rec.replace(/_/g, " ")}</span>
-            <span className="rec-chip-src">Daily TA</span>
-          </div>
-        )}
+        <SessionClock />
       </header>
 
       {view === "research" && (
@@ -587,6 +614,19 @@ export default function App() {
               <div className={`bigpx ${cls(quote?.change_pct)}${quoteRefreshing ? " refreshing" : ""}`}>
                 {fmt(quote?.price)}
               </div>
+              {(quote?.session === "pre" || quote?.session === "post" || quote?.session === "closed") &&
+                quote?.regular_close != null && (
+                  <div className="muted">
+                    {quote.session === "pre"
+                      ? "Pre-market last"
+                      : quote.session === "post"
+                        ? "Post-market last"
+                        : "After hours last · ended 8:00 PM ET"}
+                    {" · "}
+                    Close {fmt(quote.regular_close)}
+                    {quote.vs_close_pct != null ? ` · AH ${pct(quote.vs_close_pct)}` : ""}
+                  </div>
+                )}
               <div className={cls(quote?.change_pct)}>
                 {fmt(quote?.change)} ({pct(quote?.change_pct)})
               </div>
@@ -609,7 +649,12 @@ export default function App() {
           </div>
           <div className={`chart-wrap${barsLoading ? " chart-loading-active" : ""}`}>
             {barsLoading && bars.length === 0 && <div className="chart-loading">Loading chart…</div>}
-            <Chart bars={bars} />
+            <Chart bars={chartBars} />
+            {chartBars.some((b) => b.session === "pre" || b.session === "post") && (
+              <div className="muted chart-note">
+                Includes Yahoo pre-market (amber) and post-market (blue) candles.
+              </div>
+            )}
           </div>
           <LlmAdvicePanel symbol={symbol} />
           <DeepPanel data={deep} loading={deepLoading} error={deepErr} />

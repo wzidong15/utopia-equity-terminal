@@ -1,4 +1,5 @@
-const KEY = "utopia.watchlist";
+const KEY = "fintopia.watchlist";
+const LEGACY_KEY = "utopia.watchlist";
 
 export const DEFAULT_WATCHLIST = [
   "AAPL",
@@ -15,7 +16,7 @@ export const DEFAULT_WATCHLIST = [
 
 export function loadWatchlist(): string[] {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY);
     if (!raw) return [...DEFAULT_WATCHLIST];
     const parsed = JSON.parse(raw) as unknown;
     if (Array.isArray(parsed) && parsed.every((x) => typeof x === "string")) {

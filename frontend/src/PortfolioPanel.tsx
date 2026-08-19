@@ -9,6 +9,7 @@ import {
   type PortfolioStrategyKind,
   type PortfolioSummary,
 } from "./portfolio";
+import { sessionTitle } from "./marketSession";
 import type { Quote } from "./types";
 
 function money(n?: number | null) {
@@ -105,19 +106,52 @@ export default function PortfolioPanel({
     if (summary) applyPortfolio(stubFromSummary(summary));
   };
 
-  const loadList = () =>
+  const loadList = (liveMarks = false) =>
     api
-      .portfolios()
+      .portfolios({ live: liveMarks })
       .then((r) => {
-        setItems(r.items || []);
-        setSelectedId((cur) => cur || r.items?.[0]?.id || null);
+        const next = r.items || [];
+        setItems(next);
+        setSelectedId((cur) => cur || next[0]?.id || null);
+        if (liveMarks) {
+          setDetail((cur) => {
+            if (!cur) return cur;
+            const row = next.find((x) => x.id === cur.id);
+            if (!row) return cur;
+            const snaps = [...(cur.snapshots || [])];
+            const now = Math.floor(Date.now() / 1000);
+            if (row.nav != null) {
+              const last = snaps[snaps.length - 1];
+              if (last && now - last.t < 25) {
+                snaps[snaps.length - 1] = { ...last, t: now, nav: row.nav, cash: row.cash };
+              } else {
+                snaps.push({ t: now, nav: row.nav, cash: row.cash });
+              }
+            }
+            return {
+              ...cur,
+              nav: row.nav,
+              cash: row.cash,
+              pnl: row.pnl,
+              return_pct: row.return_pct,
+              updated_at: row.updated_at,
+              snapshots: snaps,
+            };
+          });
+        }
       })
       .catch((e) => setErr(String(e.message || e)));
 
   useEffect(() => {
-    loadList();
-    const id = setInterval(loadList, CHART_REFRESH_MS);
-    return () => clearInterval(id);
+    let cancelled = false;
+    loadList(false).then(() => {
+      if (!cancelled) return loadList(true);
+    });
+    const id = setInterval(() => loadList(true), CHART_REFRESH_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
   }, []);
 
   useEffect(() => {
@@ -130,8 +164,14 @@ export default function PortfolioPanel({
       if (!live || p.id !== selectedId) return;
       applyPortfolio(p);
     };
-    api.portfolio(selectedId, { live: false }).then(accept).catch((e) => live && setErr(String(e.message || e)));
-    api.portfolio(selectedId).then(accept).catch(() => undefined);
+    api
+      .portfolio(selectedId, { live: false })
+      .then(accept)
+      .catch((e) => live && setErr(String(e.message || e)))
+      .finally(() => {
+        if (!live) return;
+        api.portfolio(selectedId).then(accept).catch(() => undefined);
+      });
     const id = setInterval(() => {
       api.portfolio(selectedId).then(accept).catch(() => undefined);
     }, CHART_REFRESH_MS);
@@ -155,7 +195,7 @@ export default function PortfolioPanel({
         setName("");
         setSelectedId(p.id);
         applyPortfolio(p);
-        return loadList();
+        return loadList(true);
       })
       .catch((e) => setErr(String(e.message || e)))
       .finally(() => setBusy(false));
@@ -171,7 +211,7 @@ export default function PortfolioPanel({
           setSelectedId(null);
           setDetail(null);
         }
-        return loadList();
+        return loadList(true);
       })
       .catch((e) => setErr(String(e.message || e)));
   };
@@ -197,7 +237,7 @@ export default function PortfolioPanel({
         applyPortfolio(p);
         setTradeQty("");
         setTradeNotional("");
-        return loadList();
+        return loadList(true);
       })
       .catch((e) => setErr(String(e.message || e)))
       .finally(() => setBusy(false));
@@ -215,7 +255,7 @@ export default function PortfolioPanel({
       })
       .then((p) => {
         applyPortfolio(p);
-        return loadList();
+        return loadList(true);
       })
       .catch((e) => setErr(String(e.message || e)))
       .finally(() => setBusy(false));
@@ -228,7 +268,7 @@ export default function PortfolioPanel({
       .tickPortfolio(selectedId, true)
       .then((p) => {
         applyPortfolio(p);
-        return loadList();
+        return loadList(true);
       })
       .catch((e) => setErr(String(e.message || e)))
       .finally(() => setBusy(false));
@@ -237,6 +277,7 @@ export default function PortfolioPanel({
   const hint = STRATEGY_OPTIONS.find((s) => s.id === stratKind)?.hint;
   const fundName =
     (detail?.id === selectedId && detail?.name) || items.find((x) => x.id === selectedId)?.name || null;
+  const mark = sessionTitle(detail?.id === selectedId ? detail?.mark_session : null);
 
   return (
     <div className="layout pf-layout">
@@ -299,6 +340,7 @@ export default function PortfolioPanel({
                 <div className="name">
                   Started {money(detail.initial_cash)} · cash {money(detail.cash)} · stock shares only,
                   no options
+                  {mark ? ` · marked to Yahoo ${mark}` : ""}
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -312,6 +354,7 @@ export default function PortfolioPanel({
               <div className="stat">
                 <div className="k">NAV</div>
                 <div className="v">{money(detail.nav)}</div>
+                {mark && <div className="muted">{mark}</div>}
               </div>
               <div className="stat">
                 <div className="k">Cash</div>
@@ -385,6 +428,7 @@ export default function PortfolioPanel({
           {detail && detail.id === selectedId && (
             <div className="muted">
               Cash {money(detail.cash)} · NAV {money(detail.nav)}
+              {mark ? ` · ${mark}` : ""}
               {detail.strategy?.kind && detail.strategy.kind !== "manual"
                 ? ` · ${detail.strategy.kind}`
                 : " · manual"}

@@ -31,6 +31,8 @@ _quote: Callable[[str], dict[str, Any]] | None = None
 _quotes: Callable[[list[str]], list[dict[str, Any]]] | None = None
 _history: Callable[[str, str], dict[str, Any]] | None = None
 _movers: Callable[[str, int], list[dict[str, Any]]] | None = None
+_session: Callable[[], str] | None = None
+_extended_marks: Callable[[list[str]], dict[str, float]] | None = None
 
 
 def configure(
@@ -39,17 +41,21 @@ def configure(
     quotes: Callable[[list[str]], list[dict[str, Any]]],
     history: Callable[[str, str], dict[str, Any]],
     movers: Callable[[str, int], list[dict[str, Any]]],
+    session: Callable[[], str] | None = None,
+    extended_marks: Callable[[list[str]], dict[str, float]] | None = None,
 ) -> None:
-    global _quote, _quotes, _history, _movers
+    global _quote, _quotes, _history, _movers, _session, _extended_marks
     _quote = quote
     _quotes = quotes
     _history = history
     _movers = movers
+    _session = session
+    _extended_marks = extended_marks
     start_scheduler()
 
 
 def _strategy_interval_sec() -> float:
-    raw = (os.environ.get("UTOPIA_STRATEGY_INTERVAL_SEC") or "3600").strip()
+    raw = (os.environ.get("FINTOPIA_STRATEGY_INTERVAL_SEC") or os.environ.get("UTOPIA_STRATEGY_INTERVAL_SEC") or "3600").strip()
     try:
         sec = float(raw)
     except ValueError:
@@ -62,7 +68,7 @@ def start_scheduler() -> None:
     if _scheduler and _scheduler.is_alive():
         return
     _stop.clear()
-    _scheduler = threading.Thread(target=_scheduler_loop, name="utopia-auto-strategy", daemon=True)
+    _scheduler = threading.Thread(target=_scheduler_loop, name="fintopia-auto-strategy", daemon=True)
     _scheduler.start()
 
 
@@ -140,23 +146,45 @@ def _find(store: dict[str, Any], pid: str) -> dict[str, Any]:
     raise HTTPException(404, "Portfolio not found")
 
 
+def _mark_session() -> str:
+    if _session is None:
+        return "rth"
+    try:
+        return _session()
+    except Exception:
+        return "rth"
+
+
 def _price_map(symbols: list[str]) -> dict[str, float]:
     out: dict[str, float] = {}
     uniq = [s.upper() for s in dict.fromkeys(symbols) if s]
-    if not uniq or _quotes is None:
+    if not uniq:
         return out
-    try:
-        rows = _quotes(uniq)
-    except Exception:
-        rows = []
-    for row in rows:
-        sym = str(row.get("symbol") or "").upper()
-        px = row.get("price")
-        if sym and isinstance(px, (int, float)) and px > 0:
-            out[sym] = float(px)
+    sess = _mark_session()
+    if sess != "rth" and _extended_marks is not None:
+        try:
+            for sym, px in (_extended_marks(uniq) or {}).items():
+                key = str(sym).upper()
+                if key and isinstance(px, (int, float)) and px > 0:
+                    out[key] = float(px)
+        except Exception:
+            pass
     missing = [s for s in uniq if s not in out]
-    if missing and _quote is not None:
-        for s in missing:
+    if not missing:
+        return out
+    if _quotes is not None:
+        try:
+            rows = _quotes(missing)
+        except Exception:
+            rows = []
+        for row in rows:
+            sym = str(row.get("symbol") or "").upper()
+            px = row.get("price")
+            if sym and isinstance(px, (int, float)) and px > 0:
+                out[sym] = float(px)
+    still = [s for s in uniq if s not in out]
+    if still and _quote is not None:
+        for s in still:
             try:
                 q = _quote(s)
                 px = q.get("price")
@@ -458,6 +486,7 @@ def _enrich(p: dict[str, Any], prices: dict[str, float] | None = None) -> dict[s
         "return_pct": round(ret, 2),
         "max_drawdown_pct": round(max_dd * 100, 2),
         "prices": prices,
+        "mark_session": _mark_session(),
     }
 
 
@@ -480,10 +509,30 @@ def _summary(p: dict[str, Any], prices: dict[str, float] | None = None) -> dict[
 
 
 @router.get("")
-def list_portfolios():
+def list_portfolios(live: bool = False):
     with _lock:
         copies = [copy.deepcopy(p) for p in (_load().get("portfolios") or [])]
-    items = [_summary(p, _holding_prices(p)) for p in copies]
+    priced: list[tuple[dict[str, Any], dict[str, float], dict[str, Any]]] = []
+    for p in copies:
+        prices = _price_map(_symbols(p)) if live else _holding_prices(p)
+        e = _summary(p, prices)
+        priced.append((p, prices, e))
+    if live:
+        with _lock:
+            store = _load()
+            for _copy, prices, e in priced:
+                try:
+                    cur = _find(store, e["id"])
+                except HTTPException:
+                    continue
+                _snapshot(cur, e["nav"])
+                holdings = cur.get("holdings") or {}
+                for sym, px in prices.items():
+                    h = holdings.get(sym)
+                    if h:
+                        h["last_price"] = _money(px)
+            _save(store)
+    items = [e for _p, _pr, e in priced]
     items.sort(key=lambda x: -(x.get("updated_at") or 0))
     return {"items": items}
 
@@ -557,13 +606,24 @@ def place_order(pid: str, body: OrderBody):
         raise HTTPException(400, "Provide shares or notional")
     if _quote is None:
         raise HTTPException(502, "Quote source not configured")
-    try:
-        q = _quote(symbol)
-    except Exception as e:
-        raise HTTPException(502, f"Quote failed: {e}") from e
-    px = q.get("price")
-    if not isinstance(px, (int, float)) or px <= 0:
-        raise HTTPException(502, f"No price for {symbol}")
+    px = None
+    if _mark_session() != "rth" and _extended_marks is not None:
+        try:
+            ext = _extended_marks([symbol]) or {}
+            cand = ext.get(symbol)
+            if isinstance(cand, (int, float)) and cand > 0:
+                px = float(cand)
+        except Exception:
+            px = None
+    if px is None:
+        try:
+            q = _quote(symbol)
+        except Exception as e:
+            raise HTTPException(502, f"Quote failed: {e}") from e
+        cand = q.get("price")
+        if not isinstance(cand, (int, float)) or cand <= 0:
+            raise HTTPException(502, f"No price for {symbol}")
+        px = float(cand)
     shares = float(body.shares) if body.shares else float(body.notional) / float(px)
     shares = _shares(shares)
     if shares <= 0:

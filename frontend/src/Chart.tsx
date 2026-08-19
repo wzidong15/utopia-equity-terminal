@@ -61,18 +61,38 @@ export default function Chart({ bars }: { bars: Bar[] }) {
     if (!candle.current || !volume.current) return;
     const data = bars
       .filter((b) => b.open != null && b.high != null && b.low != null && b.close != null)
-      .map((b) => ({
+      .map((b) => {
+        const ext = b.session === "pre" || b.session === "post";
+        const up = ext ? "#54aeff" : "#1a7f37";
+        const down = ext ? "#bf8700" : "#cf222e";
+        const bull = (b.close as number) >= (b.open as number);
+        const color = bull ? up : down;
+        return {
+          time: b.time as UTCTimestamp,
+          open: b.open as number,
+          high: b.high as number,
+          low: b.low as number,
+          close: b.close as number,
+          color,
+          wickColor: color,
+          borderColor: color,
+        };
+      });
+    const vols = bars.map((b) => {
+      const ext = b.session === "pre" || b.session === "post";
+      const bull = (b.close ?? 0) >= (b.open ?? 0);
+      return {
         time: b.time as UTCTimestamp,
-        open: b.open as number,
-        high: b.high as number,
-        low: b.low as number,
-        close: b.close as number,
-      }));
-    const vols = bars.map((b) => ({
-      time: b.time as UTCTimestamp,
-      value: b.volume ?? 0,
-      color: (b.close ?? 0) >= (b.open ?? 0) ? "rgba(26,127,55,0.35)" : "rgba(207,34,46,0.35)",
-    }));
+        value: b.volume ?? 0,
+        color: ext
+          ? bull
+            ? "rgba(84,174,255,0.35)"
+            : "rgba(191,135,0,0.35)"
+          : bull
+            ? "rgba(26,127,55,0.35)"
+            : "rgba(207,34,46,0.35)",
+      };
+    });
     candle.current.setData(data);
     volume.current.setData(vols);
     chart.current?.timeScale().fitContent();

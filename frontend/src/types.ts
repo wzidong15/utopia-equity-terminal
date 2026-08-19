@@ -36,6 +36,13 @@ export type Quote = {
   source?: string;
   delay?: string;
   as_of?: number;
+  prev_close?: number | null;
+  regular_close?: number | null;
+  pre_price?: number | null;
+  post_price?: number | null;
+  vs_close?: number | null;
+  vs_close_pct?: number | null;
+  session?: "pre" | "rth" | "post" | "closed" | string;
 };
 
 export type Bar = {
@@ -45,6 +52,7 @@ export type Bar = {
   low: number | null;
   close: number | null;
   volume: number | null;
+  session?: "pre" | "rth" | "post" | string;
 };
 
 export type NewsItem = {

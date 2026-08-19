@@ -16,9 +16,11 @@ import socket
 import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, time as dt_time
 from functools import lru_cache
 from typing import Any, Literal
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 import httpx
 import pandas as pd
@@ -34,7 +36,7 @@ import llm_advice
 POLYGON_KEY = os.environ.get("POLYGON_API_KEY") or os.environ.get("MASSIVE_API_KEY") or ""
 POLYGON_BASE = os.environ.get("MASSIVE_API_BASE_URL") or "https://api.polygon.io"
 
-app = FastAPI(title="Utopia US Equity Terminal", version="0.1.0")
+app = FastAPI(title="Fintopia", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -100,8 +102,16 @@ RANGE_TO_YF = {
 _cache: dict[str, tuple[float, Any]] = {}
 
 
+def _env(*names: str, default: str = "") -> str:
+    for name in names:
+        raw = os.environ.get(name)
+        if raw is not None and str(raw).strip() != "":
+            return str(raw).strip()
+    return default
+
+
 def _live_refresh_sec() -> float:
-    raw = (os.environ.get("UTOPIA_LIVE_REFRESH_SEC") or "10").strip()
+    raw = _env("FINTOPIA_LIVE_REFRESH_SEC", "UTOPIA_LIVE_REFRESH_SEC", default="10")
     try:
         sec = float(raw)
     except ValueError:
@@ -110,7 +120,7 @@ def _live_refresh_sec() -> float:
 
 
 def _chart_refresh_sec() -> float:
-    raw = (os.environ.get("UTOPIA_CHART_REFRESH_SEC") or "30").strip()
+    raw = _env("FINTOPIA_CHART_REFRESH_SEC", "UTOPIA_CHART_REFRESH_SEC", default="30")
     try:
         sec = float(raw)
     except ValueError:
@@ -126,6 +136,10 @@ def _live_cache_ttl() -> float:
 def _chart_cache_ttl() -> float:
     """Shorter than the chart poll so /api/history is not served stale."""
     return max(1.0, _chart_refresh_sec() * 0.4)
+
+
+def _refresh_bucket() -> int:
+    return int(time.time() // max(_chart_refresh_sec(), 5.0))
 
 
 def _cached(key: str, ttl: float, fn):
@@ -153,8 +167,8 @@ def _clean(v: Any) -> Any:
     return v
 
 
-YAHOO_UA = "Mozilla/5.0 (compatible; UtopiaEquityTerminal/1.0)"
-QUOTE_HTTP_TIMEOUT = float(os.environ.get("UTOPIA_QUOTE_HTTP_TIMEOUT", "6"))
+YAHOO_UA = "Mozilla/5.0 (compatible; Fintopia/1.0)"
+QUOTE_HTTP_TIMEOUT = float(_env("FINTOPIA_QUOTE_HTTP_TIMEOUT", "UTOPIA_QUOTE_HTTP_TIMEOUT", default="6") or "6")
 TV_SCAN_HEADERS = {
     "accept": "application/json",
     "content-type": "application/json",
@@ -166,8 +180,8 @@ TV_SCAN_HEADERS = {
 @lru_cache(maxsize=1)
 def _outbound_config() -> tuple[str | None, str | None]:
     """(interface_name, bind_ip) for broken macOS TCP source selection (Errno 49)."""
-    iface = (os.environ.get("UTOPIA_BIND_INTERFACE") or "").strip() or None
-    ip = (os.environ.get("UTOPIA_BIND_IP") or "").strip() or None
+    iface = _env("FINTOPIA_BIND_INTERFACE", "UTOPIA_BIND_INTERFACE") or None
+    ip = _env("FINTOPIA_BIND_IP", "UTOPIA_BIND_IP") or None
     if not ip:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -350,10 +364,12 @@ def _make_quote(
     name: Any = None,
     source: str,
     delay: str,
+    regular_close: Any = None,
 ) -> dict[str, Any]:
     yf_sym = symbol.strip().upper().split(":")[-1]
     price = _clean(price)
     prev = _clean(prev)
+    regular_close = _clean(regular_close)
     change = (price - prev) if price is not None and prev else None
     change_pct = (change / prev * 100) if change is not None and prev else None
     return {
@@ -371,6 +387,8 @@ def _make_quote(
         "market_cap": _clean(market_cap),
         "year_high": _clean(year_high),
         "year_low": _clean(year_low),
+        "prev_close": prev,
+        "regular_close": regular_close if regular_close is not None else price,
         "source": source,
         "delay": delay,
         "as_of": int(time.time()),
@@ -428,6 +446,8 @@ def _row_to_quote(row: pd.Series) -> dict[str, Any]:
         "recommend_os": _clean(row.get("Recommend.Other")),
         "sector": _clean(row.get("sector")),
         "industry": _clean(row.get("industry")),
+        "prev_close": None,
+        "regular_close": _clean(row.get("close")),
         "source": "tradingview-screener",
         "delay": "delayed_streaming_900",
         "as_of": int(time.time()),
@@ -479,9 +499,275 @@ def resolve_tv_ticker(symbol: str) -> str:
     return str(pick["ticker"])
 
 
+NYSE_TZ = ZoneInfo("America/New_York")
+PRE_OPEN = dt_time(4, 0)
+RTH_OPEN = dt_time(9, 30)
+RTH_CLOSE = dt_time(16, 0)
+POST_CLOSE = dt_time(20, 0)
+
+
+def _us_equity_session() -> str:
+    """NYSE cash session in Eastern time: pre / rth / post / closed (overnight + weekend)."""
+    now = datetime.now(NYSE_TZ)
+    if now.weekday() >= 5:
+        return "closed"
+    t = now.time()
+    if PRE_OPEN <= t < RTH_OPEN:
+        return "pre"
+    if RTH_OPEN <= t < RTH_CLOSE:
+        return "rth"
+    if RTH_CLOSE <= t < POST_CLOSE:
+        return "post"
+    return "closed"
+
+
+SESSION_LABELS = {
+    "pre": "Pre-market",
+    "rth": "Open market",
+    "post": "Post-market",
+    "closed": "Closed",
+}
+SESSION_HOURS = {
+    "pre": "4:00–9:30 AM ET",
+    "rth": "9:30 AM–4:00 PM ET",
+    "post": "4:00–8:00 PM ET",
+    "closed": "8:00 PM–4:00 AM ET",
+}
+
+
+def _us_equity_session_info() -> dict[str, Any]:
+    now = datetime.now(NYSE_TZ)
+    sess = _us_equity_session()
+    hours = "Weekend" if now.weekday() >= 5 else SESSION_HOURS[sess]
+    time_et = now.strftime("%I:%M:%S %p").lstrip("0") + " ET"
+    return {
+        "session": sess,
+        "label": SESSION_LABELS[sess],
+        "hours": hours,
+        "time_et": time_et,
+        "tz": "America/New_York",
+    }
+
+
 def _yahoo_ticker_symbol(symbol: str) -> str:
     yf_sym = symbol.strip().upper().split(":")[-1]
     return "^VIX" if yf_sym == "VIX" else yf_sym
+
+
+def _yahoo_session_fields(symbol: str) -> dict[str, Any]:
+    t = yf.Ticker(_yahoo_ticker_symbol(symbol))
+    try:
+        info = t.info or {}
+    except Exception:
+        return {}
+    return {
+        "regular_close": _clean(info.get("regularMarketPrice")),
+        "prev_close": _clean(info.get("regularMarketPreviousClose") or info.get("previousClose")),
+        "pre_price": _clean(info.get("preMarketPrice")),
+        "post_price": _clean(info.get("postMarketPrice")),
+    }
+
+
+def _apply_session_last(
+    q: dict[str, Any],
+    sess: str,
+    marks: dict[str, float],
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    out = dict(q)
+    out["session"] = sess
+    if not out.get("regular_close"):
+        out["regular_close"] = out.get("prev_close") or out.get("price")
+    extra = extra or {}
+    if extra.get("regular_close"):
+        out["regular_close"] = extra["regular_close"]
+    if extra.get("prev_close"):
+        out["prev_close"] = extra["prev_close"]
+    if extra.get("pre_price") is not None:
+        out["pre_price"] = extra.get("pre_price")
+    if extra.get("post_price") is not None:
+        out["post_price"] = extra.get("post_price")
+    if sess != "rth":
+        sym = str(out.get("symbol") or "").upper()
+        live_px = marks.get(sym)
+        if not (isinstance(live_px, (int, float)) and live_px > 0):
+            live_px = extra.get("pre_price") if sess == "pre" else extra.get("post_price")
+        if isinstance(live_px, (int, float)) and live_px > 0:
+            out["price"] = live_px
+            out["delay"] = "yahoo_pre" if sess == "pre" else "yahoo_post"
+            if sess == "pre":
+                out["pre_price"] = live_px
+            else:
+                out["post_price"] = live_px
+    prev = out.get("prev_close")
+    price = out.get("price")
+    if isinstance(price, (int, float)) and isinstance(prev, (int, float)) and prev:
+        out["change"] = round(price - prev, 4)
+        out["change_pct"] = round((price - prev) / prev * 100, 4)
+    close = out.get("regular_close")
+    if (
+        sess != "rth"
+        and isinstance(price, (int, float))
+        and isinstance(close, (int, float))
+        and close
+    ):
+        out["vs_close"] = round(price - close, 4)
+        out["vs_close_pct"] = round((price - close) / close * 100, 4)
+    return out
+
+
+def _enrich_quote_session(q: dict[str, Any]) -> dict[str, Any]:
+    """Attach regular close and Yahoo pre/post last when the cash session is not open."""
+    sess = _us_equity_session()
+    if sess == "rth":
+        out = dict(q)
+        out["session"] = sess
+        if not out.get("regular_close"):
+            out["regular_close"] = out.get("prev_close") or out.get("price")
+        return out
+    sym = str(q.get("symbol") or "")
+    extra: dict[str, Any] = {}
+    try:
+        extra = _cached(f"yahoo-sess:{sym.upper()}", 20.0, lambda: _yahoo_session_fields(sym))
+    except Exception:
+        extra = {}
+    marks: dict[str, float] = {}
+    try:
+        marks = _yahoo_extended_marks([sym])
+    except Exception:
+        marks = {}
+    return _apply_session_last(q, sess, marks, extra)
+
+
+def _enrich_quotes_session(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sess = _us_equity_session()
+    if sess == "rth" or not rows:
+        return [_apply_session_last(q, sess, {}, {}) for q in rows]
+    syms = [str(q.get("symbol") or "") for q in rows if q.get("symbol")]
+    marks: dict[str, float] = {}
+    try:
+        marks = _yahoo_extended_marks(syms)
+    except Exception:
+        marks = {}
+    return [_apply_session_last(q, sess, marks, {}) for q in rows]
+
+
+def _yahoo_info_extended_price(symbol: str, session: str) -> float | None:
+    t = yf.Ticker(_yahoo_ticker_symbol(symbol))
+    try:
+        info = t.info or {}
+    except Exception:
+        return None
+    if session == "pre":
+        return _clean(info.get("preMarketPrice"))
+    if session == "post":
+        return _clean(info.get("postMarketPrice"))
+    return _clean(info.get("postMarketPrice")) or _clean(info.get("preMarketPrice"))
+
+
+def _last_close_from_yahoo_df(df: pd.DataFrame) -> float | None:
+    if df is None or df.empty:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        df = df.copy()
+        df.columns = df.columns.get_level_values(0)
+    if "Close" not in df.columns:
+        return None
+    closes = df["Close"].dropna()
+    if closes.empty:
+        return None
+    return _clean(closes.iloc[-1])
+
+
+def _yahoo_prepost_download_marks(symbols: list[str]) -> dict[str, float]:
+    session = _us_equity_session()
+    period = "1d" if session in ("pre", "post") else "5d"
+    yf_syms = [_yahoo_ticker_symbol(s) for s in symbols]
+    orig = { _yahoo_ticker_symbol(s): s.strip().upper().split(":")[-1] for s in symbols }
+    out: dict[str, float] = {}
+    if len(yf_syms) == 1:
+        df = yf.download(
+            yf_syms[0],
+            period=period,
+            interval="1m",
+            prepost=True,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        px = _last_close_from_yahoo_df(df)
+        if isinstance(px, (int, float)) and px > 0:
+            out[orig[yf_syms[0]]] = float(px)
+        return out
+    df = yf.download(
+        yf_syms,
+        period=period,
+        interval="1m",
+        prepost=True,
+        auto_adjust=True,
+        progress=False,
+        threads=False,
+        group_by="ticker",
+    )
+    for yf_sym, key in orig.items():
+        try:
+            sub = df[yf_sym] if isinstance(df.columns, pd.MultiIndex) else df
+            px = _last_close_from_yahoo_df(sub)
+        except Exception:
+            continue
+        if isinstance(px, (int, float)) and px > 0:
+            out[key] = float(px)
+    return out
+
+
+def _yahoo_extended_marks(symbols: list[str]) -> dict[str, float]:
+    """Yahoo pre-market / post-market last when the regular NYSE session is closed."""
+    session = _us_equity_session()
+    if session == "rth" or not symbols:
+        return {}
+    uniq = [s.strip().upper().split(":")[-1] for s in dict.fromkeys(symbols) if s]
+    uniq = [s for s in uniq if s]
+    if not uniq:
+        return {}
+    bucket = _refresh_bucket()
+    ttl = max(_chart_refresh_sec(), 15.0)
+    now = time.time()
+    found: dict[str, float] = {}
+    missing: list[str] = []
+    for sym in uniq:
+        hit = _cache.get(f"yahoo-ext1:{session}:{sym}:{bucket}")
+        if hit and now - hit[0] < ttl and isinstance(hit[1], (int, float)) and hit[1] > 0:
+            found[sym] = float(hit[1])
+        else:
+            missing.append(sym)
+    if not missing:
+        return found
+    fetched: dict[str, float] = {}
+    try:
+        fetched.update(_yahoo_prepost_download_marks(missing))
+    except Exception:
+        pass
+    still = [s for s in missing if s not in fetched]
+
+    def one(sym: str) -> tuple[str, float | None]:
+        return sym, _yahoo_info_extended_price(sym, session)
+
+    if still:
+        with ThreadPoolExecutor(max_workers=min(8, len(still))) as pool:
+            futs = [pool.submit(one, s) for s in still]
+            for fut in as_completed(futs):
+                try:
+                    sym, px = fut.result()
+                except Exception:
+                    continue
+                if isinstance(px, (int, float)) and px > 0:
+                    fetched[sym] = float(px)
+    stamped = time.time()
+    for sym, px in fetched.items():
+        if isinstance(px, (int, float)) and px > 0:
+            found[sym] = float(px)
+            _cache[f"yahoo-ext1:{session}:{sym}:{bucket}"] = (stamped, float(px))
+    return found
 
 
 def _yahoo_quote(symbol: str) -> dict[str, Any]:
@@ -558,9 +844,30 @@ def _yahoo_quote(symbol: str) -> dict[str, Any]:
     raise RuntimeError(f"Yahoo quote unavailable for {symbol.strip().upper().split(':')[-1]}")
 
 
+def _bar_session(ts: pd.Timestamp) -> str:
+    t = ts
+    try:
+        if t.tzinfo is None:
+            t = t.tz_localize(NYSE_TZ, ambiguous="NaT", nonexistent="shift_forward")
+        else:
+            t = t.tz_convert(NYSE_TZ)
+    except Exception:
+        t = ts
+    if pd.isna(t):
+        return "rth"
+    tm = t.time()
+    if tm < RTH_OPEN:
+        return "pre"
+    if tm >= RTH_CLOSE:
+        return "post"
+    return "rth"
+
+
 def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
     period, interval = RANGE_TO_YF[range]
     yf_sym = _yahoo_ticker_symbol(symbol)
+    session = _us_equity_session()
+    prepost = interval not in ("1d", "1wk") and session != "rth"
     df = yf.download(
         yf_sym,
         period=period,
@@ -568,6 +875,7 @@ def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
         auto_adjust=True,
         progress=False,
         threads=False,
+        prepost=prepost,
     )
     if df is None or df.empty:
         raise RuntimeError(f"No history for {symbol}")
@@ -586,16 +894,41 @@ def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
                 "low": _clean(r.get("Low")),
                 "close": _clean(r.get("Close")),
                 "volume": _clean(r.get("Volume")),
+                "session": _bar_session(ts) if prepost else "rth",
             }
         )
     bars = [b for b in bars if b["close"] is not None]
     if not bars:
         raise RuntimeError(f"No history bars for {symbol}")
+    if session != "rth":
+        px = None
+        if interval != "1m":
+            try:
+                marks = _yahoo_extended_marks([symbol])
+                px = marks.get(symbol.strip().upper().split(":")[-1])
+            except Exception:
+                px = None
+        if isinstance(px, (int, float)) and px > 0:
+            last = dict(bars[-1])
+            last["close"] = float(px)
+            high = last.get("high")
+            low = last.get("low")
+            last["high"] = max(float(high), float(px)) if isinstance(high, (int, float)) else float(px)
+            last["low"] = min(float(low), float(px)) if isinstance(low, (int, float)) else float(px)
+            if session in ("pre", "post"):
+                last["session"] = session
+            bars = bars[:-1] + [last]
+        elif session in ("pre", "post"):
+            last = dict(bars[-1])
+            last["session"] = session
+            bars = bars[:-1] + [last]
     return {
         "symbol": yf_sym,
         "interval": interval,
         "range": range,
         "source": "yfinance",
+        "prepost": prepost,
+        "session": session,
         "bars": bars,
     }
 
@@ -785,6 +1118,7 @@ def _polygon_quote(symbol: str) -> dict[str, Any]:
         "year_high": None,
         "year_low": None,
         "prev_close": prev_close,
+        "regular_close": _clean(day.get("c")) or prev_close,
         "source": "polygon",
         "delay": "realtime",
         "as_of": int(time.time()),
@@ -805,15 +1139,19 @@ def _best_quote(symbol: str) -> dict[str, Any]:
     yf_sym = symbol.strip().upper().split(":")[-1]
     attempts: list[tuple[str, Any]] = []
     if POLYGON_KEY:
-        attempts.extend([("polygon", _polygon_quote), ("polygon-prev", _polygon_prev_quote)])
+        attempts.append(("polygon", _polygon_quote))
     attempts.extend(
         [
             ("tradingview", _tv_quote),
-            ("yfinance-close", _yahoo_download_close),
             ("yfinance", _yahoo_quote),
+            ("yfinance-close", _yahoo_download_close),
             ("stooq", _stooq_quote),
         ]
     )
+    if POLYGON_KEY:
+        attempts.append(("polygon-prev", _polygon_prev_quote))
+    rank = {name: i for i, (name, _) in enumerate(attempts)}
+    found: dict[str, dict[str, Any]] = {}
 
     if len(attempts) == 1:
         result = _try_quote_source(attempts[0][1], symbol)
@@ -821,22 +1159,23 @@ def _best_quote(symbol: str) -> dict[str, Any]:
             return result
     else:
         with ThreadPoolExecutor(max_workers=min(6, len(attempts))) as pool:
-            futs = [pool.submit(_try_quote_source, fn, symbol) for _, fn in attempts]
+            futs = {pool.submit(_try_quote_source, fn, symbol): name for name, fn in attempts}
             try:
                 for fut in as_completed(futs, timeout=12):
-                    result = fut.result()
-                    if result:
+                    name = futs[fut]
+                    try:
+                        result = fut.result()
+                    except Exception:
+                        continue
+                    if not result:
+                        continue
+                    found[name] = result
+                    if name == "polygon":
                         return result
             except TimeoutError:
                 pass
-            for fut in futs:
-                if fut.done():
-                    try:
-                        result = fut.result()
-                        if result:
-                            return result
-                    except Exception:
-                        pass
+    if found:
+        return min(found.items(), key=lambda kv: rank.get(kv[0], 99))[1]
 
     raise RuntimeError(f"No quote for {yf_sym}")
 
@@ -948,6 +1287,7 @@ def health():
             "charts": "Yahoo Finance / yfinance",
             "news": "Yahoo Finance",
         },
+        "market": _us_equity_session_info(),
     }
 
 
@@ -978,10 +1318,10 @@ def network_test():
 @app.get("/api/indices")
 def indices():
     def fetch():
-        return _best_quotes(list(INDEX_TICKERS))
+        return _enrich_quotes_session(_best_quotes(list(INDEX_TICKERS)))
 
     try:
-        return {"items": _cached("indices", 15, fetch)}
+        return {"items": _cached(f"indices:{_us_equity_session()}", 15, fetch)}
     except Exception as e:
         raise HTTPException(502, f"Indices failed: {e}") from e
 
@@ -989,10 +1329,10 @@ def indices():
 @app.get("/api/quote/{symbol}")
 def quote(symbol: str):
     def fetch():
-        return _best_quote(symbol)
+        return _enrich_quote_session(_best_quote(symbol))
 
     try:
-        return _cached(f"quote:{symbol.upper()}", _live_cache_ttl(), fetch)
+        return _cached(f"quote:{symbol.upper()}:{_us_equity_session()}", _live_cache_ttl(), fetch)
     except Exception as e:
         raise HTTPException(502, f"Quote failed: {e}") from e
 
@@ -1003,10 +1343,16 @@ def quotes(symbols: str = Q(..., description="Comma-separated tickers")):
     if not raw:
         raise HTTPException(400, "No symbols")
     def fetch():
-        return _best_quotes(raw[:40])
+        return _enrich_quotes_session(_best_quotes(raw[:40]))
 
     try:
-        return {"items": _cached("quotes:" + ",".join(sorted(raw[:40])), 8, fetch)}
+        return {
+            "items": _cached(
+                "quotes:" + ",".join(sorted(raw[:40])) + f":{_us_equity_session()}",
+                8,
+                fetch,
+            )
+        }
     except Exception as e:
         raise HTTPException(502, f"Quotes failed: {e}") from e
 
@@ -1093,11 +1439,13 @@ def history(symbol: str, range: str = "6mo"):
         return _yfinance_history_bars(symbol, range)
 
     fresh = _chart_cache_ttl()
+    session = _us_equity_session()
     ttl = {"1d": fresh, "5d": fresh, "1mo": max(fresh, _chart_refresh_sec() * 0.8)}.get(
         range, max(15.0, _chart_refresh_sec())
     )
     try:
-        return _cached(f"hist:{cache_sym}:{range}", ttl, fetch)
+        tag = "ext" if session != "rth" and range in ("1d", "5d", "1mo") else "rth"
+        return _cached(f"hist:{cache_sym}:{range}:{tag}:{_refresh_bucket()}", ttl, fetch)
     except HTTPException:
         raise
     except Exception as e:
@@ -1252,7 +1600,7 @@ def _congress_block(symbol: str) -> dict[str, Any]:
 
     def load():
         url = f"https://congressinvests.com/trades/{needle}"
-        with httpx.Client(timeout=20.0, follow_redirects=True, headers={"User-Agent": "UtopiaTerminal/0.1"}) as client:
+        with httpx.Client(timeout=20.0, follow_redirects=True, headers={"User-Agent": "Fintopia/0.1"}) as client:
             r = client.get(url, params={"limit": 50})
             r.raise_for_status()
             return r.json()
@@ -1759,7 +2107,11 @@ def snapshot():
             "errors": {},
         }
         try:
-            payload["indices"] = _cached("indices", 15, lambda: _best_quotes(list(INDEX_TICKERS)))
+            payload["indices"] = _cached(
+                f"indices:{_us_equity_session()}",
+                15,
+                lambda: _enrich_quotes_session(_best_quotes(list(INDEX_TICKERS))),
+            )
         except Exception as e:
             payload["errors"]["indices"] = str(e)
         for kind in ("gainers", "losers", "active"):
@@ -1781,10 +2133,21 @@ def snapshot():
 
 import portfolios as portfolio_mod
 
+
+def _session_quote(symbol: str) -> dict[str, Any]:
+    return _enrich_quote_session(_best_quote(symbol))
+
+
+def _session_quotes(symbols: list[str]) -> list[dict[str, Any]]:
+    return _enrich_quotes_session(_best_quotes(symbols))
+
+
 portfolio_mod.configure(
-    quote=_best_quote,
-    quotes=_best_quotes,
+    quote=_session_quote,
+    quotes=_session_quotes,
     history=_yfinance_history_bars,
     movers=_fetch_movers_items,
+    session=_us_equity_session,
+    extended_marks=_yahoo_extended_marks,
 )
 app.include_router(portfolio_mod.router)

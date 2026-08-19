@@ -1,9 +1,9 @@
 ---
-name: utopia-equity-terminal
-description: Builds and extends the Utopia US equity terminal (FastAPI + Vite React). Use when changing backend/app.py, the frontend, market-data sources, Polygon/Massive realtime quotes, TradingView screener, yfinance charts, or when the user asks to add panels to the stock website.
+name: fintopia
+description: Builds and extends Fintopia, the US equity terminal (FastAPI + Vite React). Use when changing backend/app.py, the frontend, market-data sources, Polygon/Massive realtime quotes, TradingView screener, yfinance charts, or when the user asks to add panels to the stock website.
 ---
 
-# Utopia equity terminal
+# Fintopia
 
 Local US-stock visualization app in this repo. Not OpenBB Workspace.
 
@@ -12,7 +12,8 @@ Local US-stock visualization app in this repo. Not OpenBB Workspace.
 - Backend: `backend/app.py` (FastAPI, port 8000)
 - Frontend: `frontend/` (Vite React, port 5173, proxies `/api`)
 - Run: `./start.sh` (loads repo-root `.env` if present)
-- Quote poll: `UTOPIA_LIVE_REFRESH_SEC` (default 10). Chart + portfolio NAV: `UTOPIA_CHART_REFRESH_SEC` (default 30).
+- Quote poll: `FINTOPIA_LIVE_REFRESH_SEC` (default 10; `UTOPIA_*` aliases still work). Chart + portfolio NAV: `FINTOPIA_CHART_REFRESH_SEC` (default 30).
+- Stock portfolio marks: Yahoo pre-market / after hours when the NYSE cash session is closed (America/New_York).
 
 ## Data source priority
 
@@ -30,7 +31,7 @@ Do not claim unsigned TV/Yahoo quotes are exchange-realtime. UI footer must stay
 
 | Route | Role |
 |---|---|
-| `GET /api/health` | `polygon: bool` plus source labels |
+| `GET /api/health` | `polygon: bool` plus source labels and `market` session |
 | `GET /api/quote/{symbol}` | One quote |
 | `GET /api/quotes?symbols=AAPL,MSFT` | Watchlist |
 | `GET /api/indices` | SPY QQQ DIA IWM VIX |
