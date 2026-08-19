@@ -27,11 +27,13 @@ import pandas as pd
 import requests
 import yfinance as yf
 from fastapi import FastAPI, HTTPException, Query as Q
+from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 from tradingview_screener import Query, col
 from tradingview_ta import Interval, TA_Handler
 
 import llm_advice
+import vibe_portfolio
 
 POLYGON_KEY = os.environ.get("POLYGON_API_KEY") or os.environ.get("MASSIVE_API_KEY") or ""
 POLYGON_BASE = os.environ.get("MASSIVE_API_BASE_URL") or "https://api.polygon.io"
@@ -1698,25 +1700,39 @@ def _insider_block(t: yf.Ticker) -> dict[str, Any]:
     return {"net_value": net, "tilt": tilt, "items": rows, "source": "yfinance"}
 
 
-def _options_block(t: yf.Ticker) -> dict[str, Any]:
+def _empty_options(error: str | None = None) -> dict[str, Any]:
+    return {
+        "expiry": None,
+        "call_volume": 0,
+        "put_volume": 0,
+        "put_call": None,
+        "items": [],
+        "source": "yfinance",
+        "error": error,
+    }
+
+
+def _options_from_ticker(t: yf.Ticker) -> dict[str, Any]:
     try:
         expiries = list(t.options or [])
-    except Exception:
-        expiries = []
+    except Exception as e:
+        return _empty_options(f"Yahoo options list failed: {e}")
     if not expiries:
-        return {"expiry": None, "call_volume": 0, "put_volume": 0, "put_call": None, "items": []}
+        return _empty_options("Yahoo returned no option expirations")
 
-    def pack(df: pd.DataFrame, side: str, expiry: str) -> tuple[int, list[dict[str, Any]]]:
-        if df is None or df.empty:
+    def pack(df: pd.DataFrame | None, side: str, expiry: str) -> tuple[int, list[dict[str, Any]]]:
+        if df is None or getattr(df, "empty", True):
             return 0, []
-        vol = int(pd.to_numeric(df.get("volume"), errors="coerce").fillna(0).sum())
-        out = []
         work = df.copy()
         work["volume"] = pd.to_numeric(work.get("volume"), errors="coerce").fillna(0)
         work["openInterest"] = pd.to_numeric(work.get("openInterest"), errors="coerce").fillna(0)
         work["ratio"] = work["volume"] / work["openInterest"].clip(lower=1)
-        work = work[work["volume"] >= 50].sort_values("volume", ascending=False).head(8)
-        for _, r in work.iterrows():
+        vol = int(work["volume"].sum())
+        notable = work[work["volume"] >= 50].sort_values("volume", ascending=False).head(8)
+        if notable.empty:
+            notable = work.sort_values("volume", ascending=False).head(8)
+        out = []
+        for _, r in notable.iterrows():
             out.append(
                 {
                     "side": side,
@@ -1735,19 +1751,24 @@ def _options_block(t: yf.Ticker) -> dict[str, Any]:
     call_vol = 0
     put_vol = 0
     items: list[dict[str, Any]] = []
+    chain_errors: list[str] = []
     used_expiry = expiries[0]
     for expiry in expiries[:3]:
         try:
             chain = t.option_chain(expiry)
-        except Exception:
+        except Exception as e:
+            chain_errors.append(f"{expiry}: {e}")
             continue
-        c_vol, calls = pack(chain.calls, "call", expiry)
-        p_vol, puts = pack(chain.puts, "put", expiry)
+        c_vol, calls = pack(getattr(chain, "calls", None), "call", expiry)
+        p_vol, puts = pack(getattr(chain, "puts", None), "put", expiry)
         call_vol += c_vol
         put_vol += p_vol
         items.extend(calls + puts)
         if expiry == expiries[0]:
             used_expiry = expiry
+    if not items and call_vol == 0 and put_vol == 0:
+        detail = "; ".join(chain_errors) if chain_errors else "nearest chains had no contracts"
+        return _empty_options(f"Yahoo option chain empty ({detail})")
     pc = (put_vol / call_vol) if call_vol else None
     items = sorted(items, key=lambda x: x.get("volume") or 0, reverse=True)[:10]
     return {
@@ -1758,6 +1779,20 @@ def _options_block(t: yf.Ticker) -> dict[str, Any]:
         "items": items,
         "source": "yfinance",
     }
+
+
+def _options_block(t: yf.Ticker | str) -> dict[str, Any]:
+    """Yahoo option chain. Always uses a dedicated Ticker — sharing one across threads
+    races yfinance's session and often returns an empty chain (looks like 'no volume')."""
+    symbol = (t if isinstance(t, str) else getattr(t, "ticker", None) or str(t)).strip().upper().split(":")[-1]
+    last = _empty_options("Yahoo options unavailable")
+    for attempt in range(3):
+        last = _options_from_ticker(yf.Ticker(symbol))
+        if last.get("expiry") or last.get("items") or last.get("call_volume") or last.get("put_volume"):
+            return last
+        if attempt < 2:
+            time.sleep(0.4)
+    return last
 
 
 def _forecast_block(info: dict[str, Any], price: float | None) -> dict[str, Any]:
@@ -1940,7 +1975,7 @@ def _build_llm_context(yf_sym: str) -> dict[str, Any]:
         ta_block = {"error": str(e), "label": quote.get("recommend_label")}
 
     insiders = _insider_block(t)
-    options = _options_block(t)
+    options = _options_block(yf_sym)
     congress = _congress_block(yf_sym)
     news = _news_items(t, 8)
     price = quote.get("price")
@@ -1978,6 +2013,7 @@ def _build_llm_context(yf_sym: str) -> dict[str, Any]:
             "call_volume": options.get("call_volume"),
             "put_volume": options.get("put_volume"),
             "notable": options.get("items", [])[:6],
+            "error": options.get("error"),
         },
         "congress": {
             "buy_count": congress.get("buy_count"),
@@ -2000,18 +2036,38 @@ def llm_advice_route(symbol: str):
             503,
             "LLM not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env",
         )
-
-    def run():
-        ctx = _build_llm_context(yf_sym)
-        advice = llm_advice.generate_investment_advice(ctx)
-        return {"symbol": yf_sym, "advice": advice, "context_as_of": ctx.get("as_of")}
-
     try:
-        return _cached(f"llm-advice:{yf_sym}", 60, run)
+        ctx = _build_llm_context(yf_sym)
+        return llm_advice.start_research_conversation(yf_sym, ctx)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(502, f"LLM advice failed: {e}") from e
+
+
+class LlmChatBody(BaseModel):
+    conversation_id: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=4000)
+
+
+@app.post("/api/llm-advice/{symbol}/chat")
+def llm_advice_chat_route(symbol: str, body: LlmChatBody):
+    yf_sym = symbol.strip().upper().split(":")[-1]
+    if not llm_advice.llm_configured()["any"]:
+        raise HTTPException(
+            503,
+            "LLM not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env",
+        )
+    try:
+        return llm_advice.follow_up_research_conversation(body.conversation_id, yf_sym, body.message)
+    except KeyError:
+        raise HTTPException(404, "Conversation not found. Generate a suggestion first.") from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"LLM follow-up failed: {e}") from e
 
 
 @app.get("/api/deep/{symbol}")
@@ -2022,13 +2078,13 @@ def deep(symbol: str):
         pass
 
     def fetch():
-        t = yf.Ticker(yf_sym)
-
-        def safe_info():
+        def yahoo_bundle():
+            t = yf.Ticker(yf_sym)
             try:
-                return t.info or {}
+                info = t.info or {}
             except Exception:
-                return {}
+                info = {}
+            return info, _insider_block(t), _options_block(yf_sym), _news_items(t, 8)
 
         def safe_quote():
             try:
@@ -2042,20 +2098,14 @@ def deep(symbol: str):
             except Exception:
                 return None
 
-        with ThreadPoolExecutor(max_workers=7) as pool:
-            info_f = pool.submit(safe_info)
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            yf_f = pool.submit(yahoo_bundle)
             quote_f = pool.submit(safe_quote)
-            insiders_f = pool.submit(_insider_block, t)
-            options_f = pool.submit(_options_block, t)
             congress_f = pool.submit(_congress_block, yf_sym)
-            news_f = pool.submit(_news_items, t, 8)
             ta_f = pool.submit(safe_ta)
-            info = info_f.result()
+            info, insiders, options, news = yf_f.result()
             quote = quote_f.result()
-            insiders = insiders_f.result()
-            options = options_f.result()
             congress = congress_f.result()
-            news = news_f.result()
             ta_data = ta_f.result()
 
         price = quote.get("price")
@@ -2088,7 +2138,18 @@ def deep(symbol: str):
         }
 
     try:
-        return _cached(f"deep:{yf_sym}", 90, fetch)
+        now = time.time()
+        hit = _cache.get(f"deep:{yf_sym}")
+        ttl = 90.0
+        if hit:
+            prev = hit[1] if isinstance(hit[1], dict) else {}
+            opt = prev.get("options") or {}
+            ttl = 90.0 if opt.get("expiry") or opt.get("items") else 8.0
+            if now - hit[0] < ttl:
+                return hit[1]
+        value = fetch()
+        _cache[f"deep:{yf_sym}"] = (now, value)
+        return value
     except Exception as e:
         raise HTTPException(502, f"Deep analysis failed: {e}") from e
 
@@ -2151,3 +2212,76 @@ portfolio_mod.configure(
     extended_marks=_yahoo_extended_marks,
 )
 app.include_router(portfolio_mod.router)
+
+
+def _vibe_research_pack(pid: str) -> dict[str, Any]:
+    fund = portfolio_mod.get_portfolio(pid, live=True)
+
+    def news_fn(symbol: str) -> list[dict[str, Any]]:
+        return _news_items(yf.Ticker(symbol), 4)
+
+    def ta_fn(symbol: str) -> dict[str, Any]:
+        try:
+            return ta(symbol, "1d")
+        except Exception:
+            return {}
+
+    return vibe_portfolio.build_research(
+        fund,
+        quote_fn=_session_quote,
+        ta_fn=ta_fn,
+        news_fn=news_fn,
+        macro_fn=_macro_context,
+    )
+
+
+@app.post("/api/portfolios/{pid}/vibe")
+def vibe_portfolio_review(pid: str):
+    """Start a Vibe-style paper-fund conversation (Yahoo + daily TA, then LLM)."""
+    if not llm_advice.llm_configured()["any"]:
+        raise HTTPException(
+            503,
+            "LLM not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env",
+        )
+    try:
+        research = _vibe_research_pack(pid)
+        started = llm_advice.start_portfolio_conversation(pid, research)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Vibe review failed: {e}") from e
+    return {
+        "portfolio_id": pid,
+        "conversation_id": started.get("conversation_id"),
+        "engine": "llm",
+        "advice": started.get("advice"),
+        "messages": started.get("messages"),
+        "research": {
+            "as_of": research.get("as_of"),
+            "stack": research.get("stack"),
+            "cash_weight_pct": research.get("cash_weight_pct"),
+            "top_weight_pct": research.get("top_weight_pct"),
+            "holdings": research.get("holdings"),
+            "fund": research.get("fund"),
+        },
+        "llm": llm_advice.llm_configured(),
+    }
+
+
+@app.post("/api/portfolios/{pid}/vibe/chat")
+def vibe_portfolio_chat(pid: str, body: LlmChatBody):
+    if not llm_advice.llm_configured()["any"]:
+        raise HTTPException(
+            503,
+            "LLM not configured. Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env",
+        )
+    try:
+        return llm_advice.follow_up_portfolio_conversation(body.conversation_id, pid, body.message)
+    except KeyError:
+        raise HTTPException(404, "Conversation not found. Analyze the fund first.") from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Vibe follow-up failed: {e}") from e

@@ -5,14 +5,16 @@ export type MarketClock = {
   label: string;
   hours: string;
   timeEt: string;
+  weekday: string;
+  until: string;
 };
 
 const ET = "America/New_York";
 
 const LABELS: Record<MarketSession, string> = {
   pre: "Pre-market",
-  rth: "Open market",
-  post: "Post-market",
+  rth: "Market open",
+  post: "After hours",
   closed: "Closed",
 };
 
@@ -48,6 +50,16 @@ function parts(now: Date) {
   return { hour24, minute, second, day, hour, dayPeriod: bag.dayPeriod || "" };
 }
 
+function formatUntil(totalMins: number): string {
+  const mins = Math.max(0, Math.floor(totalMins));
+  const days = Math.floor(mins / 1440);
+  const hours = Math.floor((mins % 1440) / 60);
+  const minutes = mins % 60;
+  if (days > 0) return hours ? `${days}d ${hours}h` : `${days}d`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  return `${minutes}m`;
+}
+
 export function marketClock(now = new Date()): MarketClock {
   const p = parts(now);
   const weekend = p.day === "Sat" || p.day === "Sun";
@@ -58,20 +70,39 @@ export function marketClock(now = new Date()): MarketClock {
     else if (mins >= 9 * 60 + 30 && mins < 16 * 60) session = "rth";
     else if (mins >= 16 * 60 && mins < 20 * 60) session = "post";
   }
-  const timeEt = `${p.day} ${p.hour}:${String(p.minute).padStart(2, "0")}:${String(p.second).padStart(2, "0")} ${p.dayPeriod} ET`;
+  let until = "";
+  if (weekend) {
+    const daysUntilMon = p.day === "Sun" ? 1 : 2;
+    until = `Pre-market in ${formatUntil(daysUntilMon * 1440 - mins + 4 * 60)}`;
+  } else if (session === "pre") {
+    until = `Opens in ${formatUntil(9 * 60 + 30 - mins)}`;
+  } else if (session === "rth") {
+    until = `Closes in ${formatUntil(16 * 60 - mins)}`;
+  } else if (session === "post") {
+    until = `Ends in ${formatUntil(20 * 60 - mins)}`;
+  } else {
+    const toPre = mins < 4 * 60 ? 4 * 60 - mins : 24 * 60 - mins + 4 * 60;
+    until = `Pre-market in ${formatUntil(toPre)}`;
+  }
+  const hh = String(p.hour);
+  const mm = String(p.minute).padStart(2, "0");
+  const ss = String(p.second).padStart(2, "0");
+  const timeEt = `${hh}:${mm}:${ss} ${p.dayPeriod} ET`;
   return {
     session,
     label: LABELS[session],
     hours: weekend ? "Weekend" : HOURS[session],
     timeEt,
+    weekday: p.day,
+    until,
   };
 }
 
 export function sessionTitle(session?: string | null): string | null {
   if (!session) return null;
   if (session === "pre") return "Pre-market";
-  if (session === "post") return "Post-market";
-  if (session === "rth") return "Open market";
+  if (session === "post") return "After hours";
+  if (session === "rth") return "Market open";
   if (session === "closed") return "Closed";
   return session;
 }

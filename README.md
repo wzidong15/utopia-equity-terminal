@@ -13,9 +13,9 @@ This is a research UI, not a broker. **Not financial advice.** Data can be delay
 - Search by ticker or name
 - OHLCV chart; default range is **1D** (`1d` / `5d` / `1mo` / `3mo` / `6mo` / `1y` / `5y`)
 - Daily TradingView technical rating, Yahoo news, and company profile
-- **Stock portfolio simulation**: virtual funds that buy and sell **shares** of US stocks and ETFs, with optional auto strategies and live NAV / P/L (see below). No options. Not a broker.
+- **Stock portfolio simulation**: virtual funds that buy and sell **shares** of US stocks and ETFs, with optional auto strategies, live NAV / P/L, and a **Vibe dialog** (Yahoo last/news + TradingView daily TA, then an LLM review you can follow up in the same conversation). Requires `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. No options. Not a broker.
 - **Deep analysis**: insider Form 4 flow, option volume / put-call, Senate and House PTRs, analyst targets, headlines, and a heuristic stance (`ACCUMULATE` … `AVOID`)
-- **LLM suggestion** (Generate suggestion): BUY / SELL / LONG CALL / LONG PUT with macro context (SPY, QQQ, DIA, IWM, VIX) via OpenAI or Anthropic
+- **LLM research dialog**: type a question or use the BUY / SELL / LONG CALL / LONG PUT starter, with macro context (SPY, QQQ, DIA, IWM, VIX) via OpenAI or Anthropic, then follow-ups in the same conversation
 
 Clicking a stock shows the header quote immediately when the ticker is already on the strip, watchlist, or movers. Charts and quotes cache briefly so switching back is faster.
 
@@ -45,6 +45,7 @@ The **Stock portfolio** tab is a local paper-trading sandbox for **US stocks and
 2. Create a fund with a name and starting cash (for example `100000`).
 3. Place simulated **buy** / **sell** share orders by quantity or dollar amount, or attach an automatic strategy and turn **Auto** on.
 4. Watch NAV, cash, unrealized P/L, max drawdown, the NAV chart, holdings, and the trade log.
+5. Use the **Vibe dialog** on the fund page. **Analyze fund** posts a structured review; type in the box to follow up on the same conversation (Yahoo quotes/news and daily TA, same US stack as [Vibe-Trading MCP](https://github.com/HKUDS/Vibe-Trading)). Requires `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. Click a ticker in the notes to load it into the paper order ticket.
 
 Performance (NAV chart and marked-to-market P/L) refreshes every 30 seconds (`FINTOPIA_CHART_REFRESH_SEC`). Auto strategies try a step every hour while `./start.sh` is running (`FINTOPIA_STRATEGY_INTERVAL_SEC`, default `3600`). Use **Run one step now** to force a strategy tick immediately.
 
@@ -116,14 +117,16 @@ Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
 | `GET /api/ta/{symbol}` | Daily TA summary |
 | `GET /api/search?q=` | Symbol search |
 | `GET /api/deep/{symbol}` | Insiders, options, Congress, news, forecast, heuristic suggestion |
-| `POST /api/llm-advice/{symbol}` | LLM BUY/SELL/LONG CALL/LONG PUT |
+| `POST /api/llm-advice/{symbol}` | Start LLM research conversation (BUY/SELL/LONG CALL/LONG PUT) |
+| `POST /api/llm-advice/{symbol}/chat` | Follow-up in the same `conversation_id` |
 | `GET /api/portfolios` | Stock portfolio summaries (marked to market) |
 | `POST /api/portfolios` | Create fund `{name, amount}` |
 | `GET /api/portfolios/{id}` | Holdings, trades, NAV snapshots |
 | `DELETE /api/portfolios/{id}` | Delete fund |
 | `POST /api/portfolios/{id}/orders` | Paper buy/sell (`shares` or `notional`) |
 | `PUT /api/portfolios/{id}/strategy` | `manual` / `buy_hold` / `sma_cross` / `momentum` / `rsi_reversion` |
-| `POST /api/portfolios/{id}/tick` | Mark to market; run auto strategy if enabled |
+| `POST /api/portfolios/{id}/vibe` | Start Vibe paper-fund conversation (Yahoo + daily TA, then LLM) |
+| `POST /api/portfolios/{id}/vibe/chat` | Follow-up on the same `conversation_id` |
 
 ## Repo layout
 

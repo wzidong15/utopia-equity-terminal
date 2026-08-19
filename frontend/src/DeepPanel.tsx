@@ -144,7 +144,11 @@ export default function DeepPanel({
               {data.options.items.length === 0 && (
                 <tr>
                   <td colSpan={6} className="muted">
-                    No unusual volume on the nearest chains
+                    {data.options.error
+                      ? `Options request failed: ${data.options.error}`
+                      : data.options.expiry
+                        ? "No unusual volume on the nearest chains"
+                        : "Yahoo returned no option chain for this ticker"}
                   </td>
                 </tr>
               )}

@@ -5,6 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Literal
 
@@ -186,17 +189,29 @@ def _anthropic_uses_adaptive_thinking(model: str) -> bool:
     )
 
 
-def _call_openai(user_content: str) -> str:
+FOLLOWUP_SYSTEM = """You are a disciplined US equity research analyst continuing an existing conversation.
+You already gave a structured recommendation (JSON) for this ticker using quote, fundamentals, insiders, options, news, and macro context.
+Answer follow-up questions in clear prose (not JSON). Stay consistent with that recommendation unless the user provides new facts.
+If you change your mind, say so explicitly. Not financial advice; be explicit about uncertainty."""
+
+
+_conv_lock = threading.Lock()
+_conversations: dict[str, dict[str, Any]] = {}
+MAX_CONVERSATIONS = 48
+MAX_TURNS = 36
+
+
+def _openai_complete(messages: list[dict[str, str]], system: str, *, json_mode: bool) -> str:
     s = _llm_settings()
-    body = {
+    body: dict[str, Any] = {
         "model": s["openai_model"],
-        "temperature": 0.3,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
+        "messages": [{"role": "system", "content": system}, *messages],
     }
+    if json_mode:
+        body["temperature"] = 0.3
+        body["response_format"] = {"type": "json_object"}
+    else:
+        body["temperature"] = 0.4
     with httpx.Client(timeout=90.0) as client:
         r = client.post(
             "https://api.openai.com/v1/chat/completions",
@@ -213,18 +228,20 @@ def _call_openai(user_content: str) -> str:
     return str((choices[0].get("message") or {}).get("content") or "")
 
 
-def _call_anthropic(user_content: str) -> str:
+def _anthropic_complete(messages: list[dict[str, str]], system: str, *, json_mode: bool) -> str:
     s = _llm_settings()
     model = s["anthropic_model"]
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": 4096,
-        "system": SYSTEM_PROMPT,
-        "messages": [{"role": "user", "content": user_content}],
+        "system": system,
+        "messages": messages,
     }
-    # Opus 5 / Sonnet 5 reject non-default temperature/top_p/top_k (HTTP 400).
+    if json_mode:
+        extra = " Respond with JSON only, no markdown fences."
+        body["system"] = system + extra
     if not _anthropic_uses_adaptive_thinking(model):
-        body["temperature"] = 0.3
+        body["temperature"] = 0.3 if json_mode else 0.4
     else:
         body["output_config"] = {"effort": "low"}
         body["max_tokens"] = 8192
@@ -250,6 +267,147 @@ def _call_anthropic(user_content: str) -> str:
     return text
 
 
+def _complete(
+    messages: list[dict[str, str]], system: str, *, json_mode: bool = False
+) -> tuple[str, str, str]:
+    provider = _pick_provider()
+    s = _llm_settings()
+    if provider == "openai":
+        text = _openai_complete(messages, system, json_mode=json_mode)
+        return text, provider, s["openai_model"]
+    text = _anthropic_complete(messages, system, json_mode=json_mode)
+    return text, provider, s["anthropic_model"]
+
+
+def _call_openai(user_content: str, system: str = SYSTEM_PROMPT) -> str:
+    return _openai_complete([{"role": "user", "content": user_content}], system, json_mode=True)
+
+
+def _call_anthropic(user_content: str, system: str = SYSTEM_PROMPT) -> str:
+    return _anthropic_complete([{"role": "user", "content": user_content}], system, json_mode=True)
+
+
+def _prune_conversations() -> None:
+    if len(_conversations) <= MAX_CONVERSATIONS:
+        return
+    oldest = sorted(_conversations.items(), key=lambda kv: int(kv[1].get("updated_at") or 0))
+    for cid, _ in oldest[: len(_conversations) - MAX_CONVERSATIONS]:
+        _conversations.pop(cid, None)
+
+
+def _public_messages(conv: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for m in conv.get("messages") or []:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        kind = m.get("kind") or "text"
+        if kind == "context":
+            continue
+        item: dict[str, Any] = {"role": role, "kind": kind, "content": m.get("content") or ""}
+        if m.get("advice"):
+            item["advice"] = m["advice"]
+        out.append(item)
+    return out
+
+
+def _trim_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if len(messages) <= MAX_TURNS:
+        return messages
+    head = messages[:2]
+    tail = messages[-(MAX_TURNS - 2) :]
+    if tail and tail[0].get("role") == "assistant":
+        tail = tail[1:]
+    return head + tail
+
+
+def start_research_conversation(symbol: str, context: dict[str, Any]) -> dict[str, Any]:
+    symbol = symbol.strip().upper()
+    user_content = (
+        "Analyze the following market context and return JSON per the schema.\n\n"
+        + json.dumps(context, indent=2, default=str)
+    )
+    raw_text, provider, model = _complete(
+        [{"role": "user", "content": user_content}],
+        SYSTEM_PROMPT,
+        json_mode=True,
+    )
+    advice = _normalize_advice(_extract_json(raw_text), provider, model)
+    cid = uuid.uuid4().hex[:16]
+    now = int(time.time())
+    conv = {
+        "id": cid,
+        "kind": "research",
+        "symbol": symbol,
+        "created_at": now,
+        "updated_at": now,
+        "provider": provider,
+        "model": model,
+        "messages": [
+            {"role": "user", "content": user_content, "kind": "context"},
+            {
+                "role": "assistant",
+                "content": json.dumps(advice, indent=2, default=str),
+                "kind": "advice",
+                "advice": advice,
+            },
+        ],
+        "advice": advice,
+    }
+    with _conv_lock:
+        _conversations[cid] = conv
+        _prune_conversations()
+    return {
+        "conversation_id": cid,
+        "symbol": symbol,
+        "advice": advice,
+        "messages": _public_messages(conv),
+        "context_as_of": context.get("as_of"),
+    }
+
+
+def follow_up_research_conversation(conversation_id: str, symbol: str, message: str) -> dict[str, Any]:
+    text = (message or "").strip()
+    if not text:
+        raise ValueError("Message is empty")
+    if len(text) > 4000:
+        raise ValueError("Message is too long")
+    symbol = symbol.strip().upper()
+    with _conv_lock:
+        conv = _conversations.get(conversation_id)
+        if not conv:
+            raise KeyError("Conversation not found")
+        if conv.get("symbol") != symbol:
+            raise ValueError("Conversation is for a different symbol")
+        history = list(conv.get("messages") or [])
+
+    api_messages = [{"role": m["role"], "content": m["content"]} for m in history if m.get("role") in ("user", "assistant")]
+    api_messages.append({"role": "user", "content": text})
+    api_messages = _trim_messages(api_messages)
+    raw_text, provider, model = _complete(api_messages, FOLLOWUP_SYSTEM, json_mode=False)
+    reply = raw_text.strip()
+    now = int(time.time())
+    with _conv_lock:
+        conv = _conversations.get(conversation_id)
+        if not conv:
+            raise KeyError("Conversation not found")
+        conv.setdefault("messages", []).append({"role": "user", "content": text, "kind": "text"})
+        conv["messages"].append({"role": "assistant", "content": reply, "kind": "text"})
+        conv["messages"] = _trim_messages(conv["messages"])
+        conv["updated_at"] = now
+        conv["provider"] = provider
+        conv["model"] = model
+        public = _public_messages(conv)
+        advice = conv.get("advice")
+    return {
+        "conversation_id": conversation_id,
+        "symbol": symbol,
+        "advice": advice,
+        "reply": reply,
+        "messages": public,
+    }
+
+
 def generate_investment_advice(context: dict[str, Any]) -> dict[str, Any]:
     provider = _pick_provider()
     user_content = (
@@ -265,3 +423,196 @@ def generate_investment_advice(context: dict[str, Any]) -> dict[str, Any]:
         model = s["anthropic_model"]
     parsed = _extract_json(raw_text)
     return _normalize_advice(parsed, provider, model)
+
+
+PORTFOLIO_SYSTEM_PROMPT = """You are a disciplined US equity portfolio reviewer for a paper (simulated) stock fund.
+The fund can hold shares of US stocks and ETFs only — no options, no crypto, no shorts beyond selling existing shares.
+
+Given JSON for fund NAV, cash, holdings (weights, P/L, RSI, daily TA, headlines) and macro (SPY, QQQ, VIX), produce ONE review.
+
+Allowed overall stance (pick exactly one):
+- ADD RISK — put idle cash to work or add to winners with room
+- HOLD — keep the book; no urgent change
+- REDUCE RISK — trim concentrated or extended names, raise cash
+- REBALANCE — mix of trims and adds to fix weights / style drift
+
+Position actions: HOLD, ADD, TRIM, EXIT (shares only).
+
+Respond with JSON only (no markdown fences), schema:
+{
+  "stance": "ADD RISK" | "HOLD" | "REDUCE RISK" | "REBALANCE",
+  "confidence": "high" | "medium" | "low",
+  "thesis": "2-4 sentences on the book as a whole",
+  "suggestions": [
+    {"symbol": "AAPL", "action": "HOLD"|"ADD"|"TRIM"|"EXIT", "note": "one sentence"}
+  ],
+  "reasons": ["bullet 1", "bullet 2"],
+  "risks": ["risk 1", "risk 2"],
+  "time_horizon": "days" | "weeks" | "months"
+}
+Cover every holding. Not financial advice; be explicit when data is thin."""
+
+
+VALID_STANCES = {"ADD RISK", "HOLD", "REDUCE RISK", "REBALANCE"}
+VALID_POSITION_ACTIONS = {"HOLD", "ADD", "TRIM", "EXIT"}
+
+
+def _normalize_portfolio_advice(raw: dict[str, Any], provider: str, model: str) -> dict[str, Any]:
+    stance = str(raw.get("stance") or "HOLD").upper().strip()
+    stance = stance.replace("_", " ")
+    if stance not in VALID_STANCES:
+        for candidate in VALID_STANCES:
+            if candidate in stance:
+                stance = candidate
+                break
+        else:
+            stance = "HOLD"
+    conf = str(raw.get("confidence") or "medium").lower()
+    if conf not in ("high", "medium", "low"):
+        conf = "medium"
+    reasons = raw.get("reasons") or []
+    if not isinstance(reasons, list):
+        reasons = [str(reasons)]
+    reasons = [str(r).strip() for r in reasons if str(r).strip()][:8]
+    risks = raw.get("risks") or []
+    if not isinstance(risks, list):
+        risks = [str(risks)]
+    risks = [str(r).strip() for r in risks if str(r).strip()][:6]
+    horizon = str(raw.get("time_horizon") or "weeks").lower()
+    if horizon not in ("days", "weeks", "months"):
+        horizon = "weeks"
+    suggestions: list[dict[str, str]] = []
+    for row in raw.get("suggestions") or []:
+        if not isinstance(row, dict):
+            continue
+        sym = str(row.get("symbol") or "").upper().split(":")[-1]
+        action = str(row.get("action") or "HOLD").upper().strip()
+        if action not in VALID_POSITION_ACTIONS:
+            action = "HOLD"
+        note = str(row.get("note") or "").strip()
+        if sym:
+            suggestions.append({"symbol": sym, "action": action, "note": note})
+    return {
+        "stance": stance,
+        "confidence": conf,
+        "thesis": str(raw.get("thesis") or "").strip(),
+        "suggestions": suggestions,
+        "reasons": reasons,
+        "risks": risks,
+        "time_horizon": horizon,
+        "provider": provider,
+        "model": model,
+        "disclaimer": "Vibe-style paper-portfolio review, not financial advice. You can lose money.",
+    }
+
+
+def generate_portfolio_advice(context: dict[str, Any]) -> dict[str, Any]:
+    provider = _pick_provider()
+    user_content = (
+        "Review this paper stock portfolio and return JSON per the schema.\n\n"
+        + json.dumps(context, indent=2, default=str)
+    )
+    s = _llm_settings()
+    if provider == "openai":
+        raw_text = _call_openai(user_content, PORTFOLIO_SYSTEM_PROMPT)
+        model = s["openai_model"]
+    else:
+        raw_text = _call_anthropic(user_content, PORTFOLIO_SYSTEM_PROMPT)
+        model = s["anthropic_model"]
+    parsed = _extract_json(raw_text)
+    return _normalize_portfolio_advice(parsed, provider, model)
+
+
+PORTFOLIO_FOLLOWUP_SYSTEM = """You are a disciplined US equity portfolio reviewer continuing an existing conversation about a paper (simulated) stock fund.
+You already gave a structured review (JSON) with an overall stance (ADD RISK / HOLD / REDUCE RISK / REBALANCE) and HOLD / ADD / TRIM / EXIT notes on share positions. The fund cannot hold options, crypto, or shorts beyond selling existing shares.
+Answer follow-up questions in clear prose (not JSON). Stay consistent with that review unless the user provides new facts.
+If you change your mind, say so explicitly. Not financial advice; be explicit about uncertainty."""
+
+
+def start_portfolio_conversation(portfolio_id: str, context: dict[str, Any]) -> dict[str, Any]:
+    pid = (portfolio_id or "").strip()
+    if not pid:
+        raise ValueError("portfolio_id is required")
+    user_content = (
+        "Review this paper stock portfolio and return JSON per the schema.\n\n"
+        + json.dumps(context, indent=2, default=str)
+    )
+    raw_text, provider, model = _complete(
+        [{"role": "user", "content": user_content}],
+        PORTFOLIO_SYSTEM_PROMPT,
+        json_mode=True,
+    )
+    advice = _normalize_portfolio_advice(_extract_json(raw_text), provider, model)
+    cid = uuid.uuid4().hex[:16]
+    now = int(time.time())
+    conv = {
+        "id": cid,
+        "kind": "portfolio",
+        "portfolio_id": pid,
+        "created_at": now,
+        "updated_at": now,
+        "provider": provider,
+        "model": model,
+        "messages": [
+            {"role": "user", "content": user_content, "kind": "context"},
+            {
+                "role": "assistant",
+                "content": json.dumps(advice, indent=2, default=str),
+                "kind": "advice",
+                "advice": advice,
+            },
+        ],
+        "advice": advice,
+    }
+    with _conv_lock:
+        _conversations[cid] = conv
+        _prune_conversations()
+    return {
+        "conversation_id": cid,
+        "portfolio_id": pid,
+        "advice": advice,
+        "messages": _public_messages(conv),
+        "context_as_of": context.get("as_of"),
+    }
+
+
+def follow_up_portfolio_conversation(conversation_id: str, portfolio_id: str, message: str) -> dict[str, Any]:
+    text = (message or "").strip()
+    if not text:
+        raise ValueError("Message is empty")
+    if len(text) > 4000:
+        raise ValueError("Message is too long")
+    pid = (portfolio_id or "").strip()
+    with _conv_lock:
+        conv = _conversations.get(conversation_id)
+        if not conv:
+            raise KeyError("Conversation not found")
+        if conv.get("kind") != "portfolio" or conv.get("portfolio_id") != pid:
+            raise ValueError("Conversation is for a different portfolio")
+        history = list(conv.get("messages") or [])
+
+    api_messages = [{"role": m["role"], "content": m["content"]} for m in history if m.get("role") in ("user", "assistant")]
+    api_messages.append({"role": "user", "content": text})
+    api_messages = _trim_messages(api_messages)
+    raw_text, provider, model = _complete(api_messages, PORTFOLIO_FOLLOWUP_SYSTEM, json_mode=False)
+    reply = raw_text.strip()
+    now = int(time.time())
+    with _conv_lock:
+        conv = _conversations.get(conversation_id)
+        if not conv:
+            raise KeyError("Conversation not found")
+        conv.setdefault("messages", []).append({"role": "user", "content": text, "kind": "text"})
+        conv["messages"].append({"role": "assistant", "content": reply, "kind": "text"})
+        conv["messages"] = _trim_messages(conv["messages"])
+        conv["updated_at"] = now
+        conv["provider"] = provider
+        conv["model"] = model
+        public = _public_messages(conv)
+        advice = conv.get("advice")
+    return {
+        "conversation_id": conversation_id,
+        "portfolio_id": pid,
+        "advice": advice,
+        "reply": reply,
+        "messages": public,
+    }

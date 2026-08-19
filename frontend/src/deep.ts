@@ -19,6 +19,8 @@ export type DeepAnalysis = {
     call_volume?: number;
     put_volume?: number;
     put_call?: number | null;
+    error?: string | null;
+    source?: string | null;
     items: {
       side: string;
       expiry?: string | null;

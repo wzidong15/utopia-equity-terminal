@@ -3,6 +3,7 @@ import { api } from "./api";
 import { CHART_REFRESH_MS } from "./config";
 import NavChart from "./NavChart";
 import SymbolSearch from "./SymbolSearch";
+import VibePortfolioPanel from "./VibePortfolioPanel";
 import {
   STRATEGY_OPTIONS,
   type Portfolio,
@@ -381,6 +382,15 @@ export default function PortfolioPanel({
             <div className="chart-wrap pf-chart">
               <NavChart snapshots={detail.snapshots || []} />
             </div>
+            <VibePortfolioPanel
+              portfolioId={detail.id}
+              fundName={detail.name}
+              onApply={(s) => {
+                setTradeSym(s.symbol);
+                if (s.action === "TRIM" || s.action === "EXIT") setTradeSide("sell");
+                else if (s.action === "ADD") setTradeSide("buy");
+              }}
+            />
             <div className="section-h">Holdings</div>
             <table className="pf-table">
               <thead>

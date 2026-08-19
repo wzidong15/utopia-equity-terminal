@@ -47,6 +47,10 @@ Do not claim unsigned TV/Yahoo quotes are exchange-realtime. UI footer must stay
 | `POST /api/portfolios/{id}/orders` | Simulated trades |
 | `PUT /api/portfolios/{id}/strategy` | Manual or auto quant strategy |
 | `POST /api/portfolios/{id}/tick` | Mark-to-market / auto step |
+| `POST /api/portfolios/{id}/vibe` | Start Vibe-style paper-fund conversation (Yahoo + daily TA, then LLM) |
+| `POST /api/portfolios/{id}/vibe/chat` | Follow-up on the same `conversation_id` (prose, in-memory thread) |
+| `POST /api/llm-advice/{symbol}` | Start LLM research conversation (structured BUY/SELL/LONG CALL/LONG PUT) |
+| `POST /api/llm-advice/{symbol}/chat` | Follow-up on the same `conversation_id` (prose, in-memory thread) |
 
 ## UI conventions
 
@@ -57,7 +61,7 @@ Dark terminal: IBM Plex Sans/Mono, `--up` green / `--down` red / `--accent` ambe
 - Polygon MCP is `polygon` in `~/.cursor/mcp.json` (binary `mcp_massive`; `POLYGON_API_KEY` still works).
 - Never commit API keys. Put them in `~/.cursor/mcp.json` env and repo `.env` (gitignored).
 - Do not add new MCPs (OpenBB, Unusual Whales, WeChat, etc.) unless the user approves.
-- OpenInsider / Robinhood / Vibe-Trading are agent tools, not the website runtime unless explicitly wired.
+- OpenInsider / Robinhood / Vibe-Trading are agent tools. The website can run a Vibe-style paper-fund review via `POST /api/portfolios/{id}/vibe` using Yahoo + TradingView TA (same US stack as those MCP tools); it does not spawn `vibe-trading-mcp`.
 
 ## When extending
 

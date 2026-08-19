@@ -1,5 +1,5 @@
 import type { DeepAnalysis } from "./deep";
-import type { LlmAdviceResponse } from "./llm";
+import type { LlmAdviceChatResponse, LlmAdviceResponse, VibePortfolioChatResponse, VibePortfolioResponse } from "./llm";
 import type { Portfolio, PortfolioStrategyKind, PortfolioSummary } from "./portfolio";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
 
@@ -22,11 +22,12 @@ async function getJson<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-async function sendJson<T>(path: string, method: string, body?: unknown): Promise<T> {
+async function sendJson<T>(path: string, method: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, {
     method,
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    signal,
   });
   if (!res.ok) {
     const text = await res.text();
@@ -34,6 +35,13 @@ async function sendJson<T>(path: string, method: string, body?: unknown): Promis
   }
   if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
+}
+
+export function isAbortError(e: unknown) {
+  return (
+    (e instanceof DOMException && e.name === "AbortError") ||
+    (e instanceof Error && e.name === "AbortError")
+  );
 }
 
 export type SearchHit = {
@@ -83,14 +91,23 @@ export const api = {
     getJson<{ items: NewsItem[] }>(`/api/news/${encodeURIComponent(symbol)}`),
   ta: (symbol: string) => getJson<TA>(`/api/ta/${encodeURIComponent(symbol)}?interval=1d`),
   deep: (symbol: string) => getJson<DeepAnalysis>(`/api/deep/${encodeURIComponent(symbol)}`),
-  llmAdvice: (symbol: string): Promise<LlmAdviceResponse> =>
-    fetch(`/api/llm-advice/${encodeURIComponent(symbol)}`, { method: "POST" }).then(async (res) => {
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(errorFromBody(text, res.statusText));
-      }
-      return res.json() as Promise<LlmAdviceResponse>;
-    }),
+  llmAdvice: (symbol: string, signal?: AbortSignal): Promise<LlmAdviceResponse> =>
+    sendJson<LlmAdviceResponse>(`/api/llm-advice/${encodeURIComponent(symbol)}`, "POST", undefined, signal),
+  llmAdviceChat: (
+    symbol: string,
+    conversationId: string,
+    message: string,
+    signal?: AbortSignal,
+  ): Promise<LlmAdviceChatResponse> =>
+    sendJson<LlmAdviceChatResponse>(
+      `/api/llm-advice/${encodeURIComponent(symbol)}/chat`,
+      "POST",
+      {
+        conversation_id: conversationId,
+        message,
+      },
+      signal,
+    ),
   search: (q: string) => getJson<{ items: SearchHit[] }>(`/api/search?q=${encodeURIComponent(q)}`),
   portfolios: (opts?: { live?: boolean }) =>
     getJson<{ items: PortfolioSummary[] }>(
@@ -116,5 +133,17 @@ export const api = {
     sendJson<Portfolio>(
       `/api/portfolios/${encodeURIComponent(id)}/tick${force ? "?force=true" : ""}`,
       "POST",
+    ),
+  vibePortfolio: (id: string, signal?: AbortSignal) =>
+    sendJson<VibePortfolioResponse>(`/api/portfolios/${encodeURIComponent(id)}/vibe`, "POST", undefined, signal),
+  vibePortfolioChat: (id: string, conversationId: string, message: string, signal?: AbortSignal) =>
+    sendJson<VibePortfolioChatResponse>(
+      `/api/portfolios/${encodeURIComponent(id)}/vibe/chat`,
+      "POST",
+      {
+        conversation_id: conversationId,
+        message,
+      },
+      signal,
     ),
 };

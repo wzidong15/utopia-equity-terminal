@@ -52,12 +52,19 @@ function SessionClock() {
   }, []);
   return (
     <div
-      className={`session-chip session-${clock.session}`}
-      title={`US cash session (${clock.hours})`}
+      className={`market-bar session-${clock.session}`}
+      role="status"
+      aria-live="polite"
+      title={`US cash session · ${clock.hours}`}
     >
-      <span className="session-name">{clock.label}</span>
-      <span className="session-time">{clock.timeEt}</span>
-      <span className="session-hours">{clock.hours}</span>
+      <span className="market-dot" aria-hidden />
+      <span className="market-label">{clock.label}</span>
+      <span className="market-time">{clock.timeEt}</span>
+      <span className="market-meta">
+        <span className="market-day">{clock.weekday}</span>
+        <span className="market-hours">{clock.hours}</span>
+        <span className="market-until">{clock.until}</span>
+      </span>
     </div>
   );
 }
@@ -464,9 +471,14 @@ export default function App() {
           </button>
         </div>
         <div className="search">
+          <svg className="search-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden>
+            <circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.4" />
+            <path d="M10.4 10.4L14 14" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+          </svg>
           <input
             value={q}
             placeholder="Search ticker or name"
+            aria-label="Search ticker or name"
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Enter" && q.trim()) {
@@ -520,8 +532,8 @@ export default function App() {
             </div>
           )}
         </div>
-        <SessionClock />
       </header>
+      <SessionClock />
 
       {view === "research" && (
         <>
@@ -620,7 +632,7 @@ export default function App() {
                     {quote.session === "pre"
                       ? "Pre-market last"
                       : quote.session === "post"
-                        ? "Post-market last"
+                        ? "After hours last"
                         : "After hours last · ended 8:00 PM ET"}
                     {" · "}
                     Close {fmt(quote.regular_close)}

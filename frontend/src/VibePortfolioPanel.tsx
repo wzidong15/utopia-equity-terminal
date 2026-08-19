@@ -1,37 +1,74 @@
 import { useEffect, useRef, useState } from "react";
 import { api, isAbortError } from "./api";
-import type { LlmAdvice, LlmChatMessage } from "./llm";
+import type { VibeChatMessage, VibePortfolioAdvice, VibeSuggestion } from "./llm";
 
 const STARTERS: { label: string; action: "generate" | "ask" }[] = [
-  { label: "Give me a BUY, SELL, LONG CALL, or LONG PUT view", action: "generate" },
-  { label: "What would change your mind?", action: "ask" },
-  { label: "How do options flow and insiders line up?", action: "ask" },
+  { label: "Analyze the book: ADD RISK, HOLD, REDUCE RISK, or REBALANCE", action: "generate" },
+  { label: "Where is concentration risk?", action: "ask" },
+  { label: "What should I do with idle cash?", action: "ask" },
 ];
 
-function actionClass(action: string) {
-  const a = action.toUpperCase();
-  if (a === "BUY" || a === "LONG CALL") return "badge buy";
-  if (a === "SELL" || a === "LONG PUT") return "badge sell";
+function stanceClass(stance: string) {
+  const s = stance.toUpperCase();
+  if (s === "ADD RISK") return "badge buy";
+  if (s === "REDUCE RISK") return "badge sell";
+  if (s === "REBALANCE") return "badge ta-buy";
   return "badge neutral";
 }
 
-function AdviceCard({ advice }: { advice: LlmAdvice }) {
+function actionClass(action: string) {
+  const a = action.toUpperCase();
+  if (a === "ADD") return "badge buy";
+  if (a === "TRIM" || a === "EXIT") return "badge sell";
+  return "badge neutral";
+}
+
+function AdviceCard({
+  advice,
+  cashWeight,
+  topWeight,
+  engine,
+  onApply,
+}: {
+  advice: VibePortfolioAdvice;
+  cashWeight?: number;
+  topWeight?: number;
+  engine?: string;
+  onApply?: (s: VibeSuggestion) => void;
+}) {
   return (
     <div className="decision llm-result llm-result-inline">
       <div className="decision-row">
-        <span className={actionClass(advice.action)}>{advice.action}</span>
+        <span className={stanceClass(advice.stance)}>{advice.stance}</span>
         <span className="muted">
-          {advice.confidence} confidence · {advice.time_horizon} horizon
+          {advice.confidence} confidence · {advice.time_horizon}
+          {engine ? ` · ${engine}` : ""}
         </span>
         <span className="muted llm-meta">
           {advice.provider}/{advice.model}
         </span>
       </div>
       {advice.thesis && <p className="llm-thesis">{advice.thesis}</p>}
-      {advice.macro_view && (
+      {(cashWeight != null || topWeight != null) && (
+        <div className="muted pf-hint">
+          {cashWeight != null ? `Cash ${cashWeight.toFixed(1)}% of NAV` : ""}
+          {topWeight != null ? ` · largest name ${topWeight.toFixed(1)}%` : ""}
+        </div>
+      )}
+      {advice.suggestions.length > 0 && (
         <div className="llm-block">
-          <div className="k">Macro context</div>
-          <p>{advice.macro_view}</p>
+          <div className="k">Position notes</div>
+          <ul className="vibe-suggestions">
+            {advice.suggestions.map((s) => (
+              <li key={`${s.symbol}-${s.action}`}>
+                <span className={actionClass(s.action)}>{s.action}</span>{" "}
+                <button type="button" className="linkish" onClick={() => onApply?.(s)}>
+                  {s.symbol}
+                </button>
+                {s.note ? <span className="muted"> — {s.note}</span> : null}
+              </li>
+            ))}
+          </ul>
         </div>
       )}
       {advice.reasons.length > 0 && (
@@ -59,18 +96,33 @@ function AdviceCard({ advice }: { advice: LlmAdvice }) {
   );
 }
 
-export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
+export default function VibePortfolioPanel({
+  portfolioId,
+  fundName,
+  onApply,
+}: {
+  portfolioId: string | null;
+  fundName?: string;
+  onApply?: (s: VibeSuggestion) => void;
+}) {
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const [advice, setAdvice] = useState<LlmAdvice | null>(null);
-  const [messages, setMessages] = useState<LlmChatMessage[]>([]);
+  const [advice, setAdvice] = useState<VibePortfolioAdvice | null>(null);
+  const [messages, setMessages] = useState<VibeChatMessage[]>([]);
+  const [cashWeight, setCashWeight] = useState<number | undefined>();
+  const [topWeight, setTopWeight] = useState<number | undefined>();
+  const [engine, setEngine] = useState<string | undefined>();
   const [draft, setDraft] = useState("");
   const threadRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const idRef = useRef(portfolioId);
+  idRef.current = portfolioId;
+
+  const label = fundName || "this fund";
 
   useEffect(() => {
     api
@@ -88,8 +140,11 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
     setConversationId(null);
     setAdvice(null);
     setMessages([]);
+    setCashWeight(undefined);
+    setTopWeight(undefined);
+    setEngine(undefined);
     setDraft("");
-  }, [symbol]);
+  }, [portfolioId]);
 
   useEffect(() => {
     const el = threadRef.current;
@@ -98,7 +153,7 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
   }, [messages, loading, sending]);
 
   const busy = loading || sending;
-  const ready = configured !== false;
+  const ready = configured !== false && Boolean(portfolioId);
 
   const nextController = () => {
     abortRef.current?.abort();
@@ -112,13 +167,19 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
   };
 
   const beginConversation = async (signal: AbortSignal) => {
-    const r = await api.llmAdvice(symbol, signal);
+    if (!portfolioId) throw new Error("Select a fund first");
+    const id = portfolioId;
+    const r = await api.vibePortfolio(id, signal);
+    if (id !== idRef.current) throw new Error("Fund changed");
     const nextMessages = r.messages?.length
       ? r.messages
       : [{ role: "assistant", kind: "advice", content: "", advice: r.advice }];
     setConversationId(r.conversation_id);
     setAdvice(r.advice);
-    setConfigured(true);
+    setEngine(r.engine);
+    setCashWeight(r.research?.cash_weight_pct);
+    setTopWeight(r.research?.top_weight_pct);
+    if (r.llm?.any || r.engine === "llm") setConfigured(true);
     return { id: r.conversation_id, messages: nextMessages, advice: r.advice };
   };
 
@@ -143,14 +204,15 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
 
   const send = async (preset?: string) => {
     const text = (preset ?? draft).trim();
-    if (!text || busy || !ready) return;
+    if (!text || busy || !ready || !portfolioId) return;
     if (!preset) setDraft("");
     const controller = nextController();
     setSending(true);
     setError(null);
 
     let cid = conversationId;
-    const pendingUser: LlmChatMessage = { role: "user", kind: "text", content: text };
+    const pendingUser: VibeChatMessage = { role: "user", kind: "text", content: text };
+    const id = portfolioId;
 
     try {
       if (!cid) {
@@ -163,11 +225,12 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
       } else {
         setMessages((prev) => [...prev, pendingUser]);
       }
-      const r = await api.llmAdviceChat(symbol, cid, text, controller.signal);
-      if (controller.signal.aborted) return;
+      const r = await api.vibePortfolioChat(id, cid, text, controller.signal);
+      if (id !== idRef.current || controller.signal.aborted) return;
       setMessages(r.messages);
       if (r.advice) setAdvice(r.advice);
     } catch (e) {
+      if (id !== idRef.current) return;
       if (isAbortError(e) || controller.signal.aborted) {
         setDraft(text);
         setMessages((prev) => prev.filter((m) => !(m.role === "user" && m.content === text && m.kind === "text")));
@@ -177,6 +240,7 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
       setDraft(text);
       setMessages((prev) => prev.filter((m) => !(m.role === "user" && m.content === text && m.kind === "text")));
     } finally {
+      if (id !== idRef.current) return;
       if (abortRef.current === controller) abortRef.current = null;
       setLoading(false);
       setSending(false);
@@ -190,38 +254,36 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
     <section className="llm-advice">
       <div className="llm-advice-head">
         <div>
-          <div className="llm-advice-title">Research dialog</div>
+          <div className="llm-advice-title">Vibe dialog</div>
           <div className="llm-advice-sub">
-            Chat with the model about {symbol}. Type a question, or pick a starter — including a BUY / SELL / LONG
-            CALL / LONG PUT view. Follow-ups stay on the same conversation.
+            Chat about {label}. Analyze fund posts a structured review; type in the box to follow up on the same
+            conversation. Requires <code>OPENAI_API_KEY</code> or <code>ANTHROPIC_API_KEY</code> in <code>.env</code>.
           </div>
         </div>
+        <button type="button" className="llm-btn" onClick={generate} disabled={busy || !ready}>
+          {conversationId ? "New review" : "Analyze fund"}
+        </button>
       </div>
 
-      <div className="llm-dialog" role="region" aria-labelledby="llm-dialog-title">
+      <div className="llm-dialog" role="region" aria-labelledby="vibe-dialog-title">
         <div className="llm-dialog-bar">
           <div>
-            <div id="llm-dialog-title" className="llm-dialog-title">
-              {symbol} conversation
+            <div id="vibe-dialog-title" className="llm-dialog-title">
+              {label} conversation
             </div>
             <div className="llm-dialog-sub">
               {conversationId
                 ? `Conversation ${conversationId} · type below to follow up`
-                : "Type below to start, or use a starter chip"}
+                : "Type below to start, or analyze the fund first"}
             </div>
           </div>
-          <div className="llm-dialog-actions">
-            {busy && (
+          {busy && (
+            <div className="llm-dialog-actions">
               <button type="button" className="llm-btn llm-btn-stop" onClick={stop}>
                 Stop
               </button>
-            )}
-            {conversationId && (
-              <button type="button" className="llm-chip" onClick={generate} disabled={busy || !ready}>
-                New conversation
-              </button>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         {error && <div className="err llm-err llm-err-dialog">{error}</div>}
@@ -233,7 +295,7 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
               <h3>Add an LLM key to use this dialog</h3>
               <p>
                 Put one of these in the repo-root <code>.env</code>, then restart <code>./start.sh</code>. The box
-                below is the chat — it stays on this ticker.
+                below is the chat — it stays on this paper fund.
               </p>
               <pre>
                 OPENAI_API_KEY=sk-…
@@ -243,13 +305,21 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
             </div>
           )}
 
+          {configured !== false && !portfolioId && (
+            <div className="llm-empty">
+              <div className="llm-empty-kicker">No fund</div>
+              <h3>Select a paper fund</h3>
+              <p>Open a portfolio on the left, then ask about holdings, cash, or risk in this dialog.</p>
+            </div>
+          )}
+
           {ready && empty && (
             <div className="llm-empty">
               <div className="llm-empty-kicker">Ready</div>
-              <h3>Ask about {symbol} here</h3>
+              <h3>Ask about {label} here</h3>
               <p>
-                This is a live research chat. Type in the field under this thread, then Send. The BUY / SELL / LONG
-                CALL / LONG PUT starter posts a structured card first; your next messages stay on that thread.
+                This is a live Vibe-style review chat. Type under this thread, then Send. Analyze fund posts HOLD /
+                ADD / TRIM / EXIT notes first; your next messages stay on that thread. Shares only — no options.
               </p>
               <div className="llm-starters">
                 {STARTERS.map((item) => (
@@ -269,16 +339,23 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
 
           {loading && (
             <div className="llm-bubble assistant llm-bubble-status">
-              Sending {symbol} market context to the model. This can take a few seconds.
+              Sending {label} holdings, Yahoo marks, and daily TA to the model. This can take a few seconds.
             </div>
           )}
 
           {messages.map((m, i) => {
             if (m.kind === "advice" && (m.advice || advice)) {
+              const card = m.advice || advice!;
               return (
                 <div key={`${m.role}-${i}`} className="llm-bubble assistant llm-bubble-advice">
-                  <div className="llm-bubble-label">Suggestion</div>
-                  <AdviceCard advice={m.advice || advice!} />
+                  <div className="llm-bubble-label">Review</div>
+                  <AdviceCard
+                    advice={card}
+                    cashWeight={cashWeight}
+                    topWeight={topWeight}
+                    engine={engine}
+                    onApply={onApply}
+                  />
                 </div>
               );
             }
@@ -292,7 +369,7 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
             }
             return (
               <div key={`${m.role}-${i}`} className="llm-bubble assistant">
-                <div className="llm-bubble-label">Analyst</div>
+                <div className="llm-bubble-label">Vibe</div>
                 <p>{m.content}</p>
               </div>
             );
@@ -308,22 +385,24 @@ export default function LlmAdvicePanel({ symbol }: { symbol: string }) {
             send();
           }}
         >
-          <label className="llm-compose-label" htmlFor="llm-compose-input">
+          <label className="llm-compose-label" htmlFor="vibe-compose-input">
             Message
           </label>
           <div className="llm-compose-row">
             <textarea
-              id="llm-compose-input"
+              id="vibe-compose-input"
               ref={composerRef}
               rows={3}
               value={draft}
               disabled={!ready || busy}
               placeholder={
-                !ready
+                configured === false
                   ? "LLM key required before you can chat"
-                  : conversationId
-                    ? `Reply about ${symbol} (same conversation)…`
-                    : `Ask anything about ${symbol}…`
+                  : !portfolioId
+                    ? "Select a fund first"
+                    : conversationId
+                      ? `Reply about ${label} (same conversation)…`
+                      : `Ask anything about ${label}…`
               }
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={(e) => {
