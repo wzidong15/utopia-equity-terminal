@@ -15,6 +15,7 @@ Local US-stock visualization app in this repo. Not OpenBB Workspace.
 - Quote poll: `FINTOPIA_LIVE_REFRESH_SEC` (default 10; `UTOPIA_*` aliases still work). Chart + portfolio NAV: `FINTOPIA_CHART_REFRESH_SEC` (default 30).
 - Stock portfolio marks: Yahoo pre-market / after hours when the NYSE cash session is closed (America/New_York).
 - Paper funds persist in `~/.fintopia/portfolios.json` (not in git). Congress PTRs cache in `~/.fintopia/congress_ptr.json`. Optional `FINTOPIA_DATA_DIR`.
+- Outbound HTTP uses a process-wide httpx/requests pool (keep-alive; `FINTOPIA_HTTP_POOL_SIZE`, default 20). Quote sources run sequentially. Do not add per-call `httpx.Client()` / `requests.Session()` / curl on the quote path.
 
 ## Data source priority
 
@@ -55,7 +56,7 @@ Do not claim unsigned TV/Yahoo quotes are exchange-realtime. UI footer must stay
 
 ## UI conventions
 
-Dark terminal: IBM Plex Sans/Mono, `--up` green / `--down` red / `--accent` amber. No gradients, no emoji. Keep the three-column layout (watchlist + movers | chart | TA/news).
+GitHub dark canvas `#0D1117` with logo greens: `--accent` / `--up` `#56D364`, `--down` `#F85149`, text `#E6EDF3`. Header uses the dark horizontal lockup. No emoji. Keep the three-column layout (watchlist + movers | chart | TA/news).
 
 ## MCP / keys
 

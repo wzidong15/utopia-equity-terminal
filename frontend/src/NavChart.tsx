@@ -11,18 +11,18 @@ export default function NavChart({ snapshots }: { snapshots: PortfolioSnapshot[]
     if (!host.current) return;
     const c = createChart(host.current, {
       layout: {
-        background: { type: ColorType.Solid, color: "#ffffff" },
-        textColor: "#656d76",
+        background: { type: ColorType.Solid, color: "#161b22" },
+        textColor: "#8b949e",
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       },
       grid: {
-        vertLines: { color: "#eaeef2" },
-        horzLines: { color: "#eaeef2" },
+        vertLines: { color: "#21262d" },
+        horzLines: { color: "#21262d" },
       },
-      rightPriceScale: { borderColor: "#d0d7de" },
-      timeScale: { borderColor: "#d0d7de", timeVisible: true },
+      rightPriceScale: { borderColor: "#30363d" },
+      timeScale: { borderColor: "#30363d", timeVisible: true },
     });
-    const line = c.addLineSeries({ color: "#0969da", lineWidth: 2 });
+    const line = c.addLineSeries({ color: "#56d364", lineWidth: 2 });
     chart.current = c;
     series.current = line;
     const ro = new ResizeObserver(() => {

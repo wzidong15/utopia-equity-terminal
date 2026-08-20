@@ -455,7 +455,13 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <strong>Fintopia</strong>
+          <img
+            className="brand-logo"
+            src="/logo-horizontal.svg"
+            width={138}
+            height={32}
+            alt="Fintopia"
+          />
           <span>US equities · stock portfolio</span>
         </div>
         <div className="view-tabs">

@@ -18,24 +18,24 @@ export default function Chart({ bars }: { bars: Bar[] }) {
     if (!host.current) return;
     const c = createChart(host.current, {
       layout: {
-        background: { type: ColorType.Solid, color: "#ffffff" },
-        textColor: "#656d76",
+        background: { type: ColorType.Solid, color: "#161b22" },
+        textColor: "#8b949e",
         fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       },
       grid: {
-        vertLines: { color: "#eaeef2" },
-        horzLines: { color: "#eaeef2" },
+        vertLines: { color: "#21262d" },
+        horzLines: { color: "#21262d" },
       },
-      rightPriceScale: { borderColor: "#d0d7de" },
-      timeScale: { borderColor: "#d0d7de", timeVisible: true },
-      crosshair: { horzLine: { color: "#0969da" }, vertLine: { color: "#0969da" } },
+      rightPriceScale: { borderColor: "#30363d" },
+      timeScale: { borderColor: "#30363d", timeVisible: true },
+      crosshair: { horzLine: { color: "#56d364" }, vertLine: { color: "#56d364" } },
     });
     const candles = c.addCandlestickSeries({
-      upColor: "#1a7f37",
-      downColor: "#cf222e",
+      upColor: "#56d364",
+      downColor: "#f85149",
       borderVisible: false,
-      wickUpColor: "#1a7f37",
-      wickDownColor: "#cf222e",
+      wickUpColor: "#56d364",
+      wickDownColor: "#f85149",
     });
     const vols = c.addHistogramSeries({
       priceScaleId: "vol",
@@ -63,8 +63,8 @@ export default function Chart({ bars }: { bars: Bar[] }) {
       .filter((b) => b.open != null && b.high != null && b.low != null && b.close != null)
       .map((b) => {
         const ext = b.session === "pre" || b.session === "post";
-        const up = ext ? "#54aeff" : "#1a7f37";
-        const down = ext ? "#bf8700" : "#cf222e";
+        const up = ext ? "#58a6ff" : "#56d364";
+        const down = ext ? "#d29922" : "#f85149";
         const bull = (b.close as number) >= (b.open as number);
         const color = bull ? up : down;
         return {
@@ -86,11 +86,11 @@ export default function Chart({ bars }: { bars: Bar[] }) {
         value: b.volume ?? 0,
         color: ext
           ? bull
-            ? "rgba(84,174,255,0.35)"
-            : "rgba(191,135,0,0.35)"
+            ? "rgba(88,166,255,0.35)"
+            : "rgba(210,153,34,0.35)"
           : bull
-            ? "rgba(26,127,55,0.35)"
-            : "rgba(207,34,46,0.35)",
+            ? "rgba(86,211,100,0.35)"
+            : "rgba(248,81,73,0.35)",
       };
     });
     candle.current.setData(data);

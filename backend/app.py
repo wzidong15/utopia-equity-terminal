@@ -22,10 +22,12 @@ from functools import lru_cache
 from typing import Any, Literal
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
+import threading
 
 import httpx
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
 import yfinance as yf
 from fastapi import FastAPI, HTTPException, Query as Q
 from pydantic import BaseModel, Field
@@ -45,6 +47,7 @@ POLYGON_BASE = os.environ.get("MASSIVE_API_BASE_URL") or "https://api.polygon.io
 async def _lifespan(_app: FastAPI):
     congress_ptr.kick_refresh()
     yield
+    _close_http_pools()
 
 
 app = FastAPI(title="Fintopia", version="0.1.0", lifespan=_lifespan)
@@ -186,6 +189,21 @@ TV_SCAN_HEADERS = {
     "origin": "https://www.tradingview.com",
     "referer": "https://www.tradingview.com/",
 }
+_requests_lock = threading.Lock()
+
+
+def _http_pool_size() -> int:
+    raw = _env("FINTOPIA_HTTP_POOL_SIZE", "UTOPIA_HTTP_POOL_SIZE", default="20")
+    try:
+        n = int(raw)
+    except ValueError:
+        n = 20
+    return max(2, min(n, 128))
+
+
+def _http_keepalive() -> int:
+    n = _http_pool_size()
+    return max(1, min(n, 10 if n > 10 else n))
 
 
 @lru_cache(maxsize=1)
@@ -202,6 +220,96 @@ def _outbound_config() -> tuple[str | None, str | None]:
         except OSError:
             ip = None
     return iface, ip
+
+
+class _BindAdapter(HTTPAdapter):
+    def __init__(self, bind_ip: str | None = None, **kwargs):
+        self._bind_ip = bind_ip
+        super().__init__(**kwargs)
+
+    def init_poolmanager(self, *args, **kwargs):
+        if self._bind_ip:
+            kwargs["source_address"] = (self._bind_ip, 0)
+        return super().init_poolmanager(*args, **kwargs)
+
+
+@lru_cache(maxsize=1)
+def _requests_session() -> requests.Session:
+    _, bind_ip = _outbound_config()
+    n = _http_pool_size()
+    session = requests.Session()
+    session.headers.update({"User-Agent": YAHOO_UA})
+    adapter = _BindAdapter(bind_ip, pool_connections=n, pool_maxsize=n)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
+@lru_cache(maxsize=1)
+def _httpx_client() -> httpx.Client:
+    _, bind_ip = _outbound_config()
+    n = _http_pool_size()
+    keep = _http_keepalive()
+    limits = httpx.Limits(max_connections=n, max_keepalive_connections=keep)
+    kwargs: dict[str, Any] = {
+        "timeout": httpx.Timeout(15.0),
+        "headers": {"User-Agent": YAHOO_UA},
+        "follow_redirects": True,
+        "limits": limits,
+    }
+    if bind_ip:
+        kwargs["transport"] = httpx.HTTPTransport(local_address=bind_ip, limits=limits)
+    return httpx.Client(**kwargs)
+
+
+@lru_cache(maxsize=1)
+def _yf_session():
+    """One curl_cffi session for all yfinance calls (required by yfinance 0.2)."""
+    try:
+        from curl_cffi import requests as cf_requests
+
+        return cf_requests.Session(impersonate="chrome")
+    except Exception:
+        return None
+
+
+def _yf_ticker(symbol: str) -> yf.Ticker:
+    sess = _yf_session()
+    if sess is None:
+        return yf.Ticker(symbol)
+    return yf.Ticker(symbol, session=sess)
+
+
+def _yf_download(*args, **kwargs):
+    sess = _yf_session()
+    if sess is not None:
+        kwargs.setdefault("session", sess)
+    kwargs.setdefault("progress", False)
+    kwargs.setdefault("threads", False)
+    return yf.download(*args, **kwargs)
+
+
+def _close_http_pools() -> None:
+    if _httpx_client.cache_info().currsize:
+        try:
+            _httpx_client().close()
+        except Exception:
+            pass
+        _httpx_client.cache_clear()
+    if _requests_session.cache_info().currsize:
+        try:
+            _requests_session().close()
+        except Exception:
+            pass
+        _requests_session.cache_clear()
+    if _yf_session.cache_info().currsize:
+        try:
+            sess = _yf_session()
+            if sess is not None:
+                sess.close()
+        except Exception:
+            pass
+        _yf_session.cache_clear()
 
 
 def _curl_fetch(
@@ -240,6 +348,13 @@ def _curl_fetch(
     return proc.stdout
 
 
+def _request_headers(json_body: dict[str, Any] | None) -> dict[str, str]:
+    headers = {"User-Agent": YAHOO_UA}
+    if json_body is not None:
+        headers.update(TV_SCAN_HEADERS)
+    return headers
+
+
 def _requests_fetch(
     method: str,
     url: str,
@@ -248,24 +363,13 @@ def _requests_fetch(
     timeout: float = 15.0,
     bind_ip: str | None = None,
 ) -> str:
-    headers = {"User-Agent": YAHOO_UA}
-    if json_body is not None:
-        headers.update(TV_SCAN_HEADERS)
-    session = requests.Session()
-    if bind_ip:
-        from requests.adapters import HTTPAdapter
-
-        class _BindAdapter(HTTPAdapter):
-            def init_poolmanager(self, *args, **kwargs):
-                kwargs["source_address"] = (bind_ip, 0)
-                return super().init_poolmanager(*args, **kwargs)
-
-        session.mount("https://", _BindAdapter())
-        session.mount("http://", _BindAdapter())
-    if method.upper() == "GET":
-        r = session.get(url, headers=headers, timeout=timeout)
-    else:
-        r = session.post(url, json=json_body, headers=headers, timeout=timeout)
+    headers = _request_headers(json_body)
+    session = _requests_session()
+    with _requests_lock:
+        if method.upper() == "GET":
+            r = session.get(url, headers=headers, timeout=timeout)
+        else:
+            r = session.post(url, json=json_body, headers=headers, timeout=timeout)
     r.raise_for_status()
     return r.text
 
@@ -278,19 +382,14 @@ def _httpx_fetch(
     timeout: float = 15.0,
     bind_ip: str | None = None,
 ) -> str:
-    headers = {"User-Agent": YAHOO_UA}
-    if json_body is not None:
-        headers.update(TV_SCAN_HEADERS)
-    client_kwargs: dict[str, Any] = {"timeout": timeout, "headers": headers}
-    if bind_ip:
-        client_kwargs["transport"] = httpx.HTTPTransport(local_address=bind_ip)
-    with httpx.Client(**client_kwargs) as client:
-        if method.upper() == "GET":
-            r = client.get(url)
-        else:
-            r = client.post(url, json=json_body)
-        r.raise_for_status()
-        return r.text
+    headers = _request_headers(json_body)
+    client = _httpx_client()
+    if method.upper() == "GET":
+        r = client.get(url, headers=headers, timeout=timeout)
+    else:
+        r = client.post(url, json=json_body, headers=headers, timeout=timeout)
+    r.raise_for_status()
+    return r.text
 
 
 def _http_text(
@@ -306,23 +405,21 @@ def _http_text(
     errors: list[str] = []
     body = json.dumps(json_body) if json_body is not None else None
     iface, bind_ip = _outbound_config()
-    attempts: list[tuple[str, Any]] = []
+    # Keep-alive first. curl is a last resort: each subprocess burns a TIME_WAIT 4-tuple.
+    attempts: list[tuple[str, Any]] = [
+        ("httpx", lambda: _httpx_fetch(method, url, json_body=json_body, timeout=timeout)),
+        ("requests", lambda: _requests_fetch(method, url, json_body=json_body, timeout=timeout)),
+    ]
     if iface:
         attempts.append(
             ("curl-if", lambda: _curl_fetch(method, url, body=body, timeout=timeout, interface=iface))
         )
     if bind_ip:
-        attempts.extend(
-            [
-                ("httpx-bind", lambda: _httpx_fetch(method, url, json_body=json_body, timeout=timeout, bind_ip=bind_ip)),
-                ("requests-bind", lambda: _requests_fetch(method, url, json_body=json_body, timeout=timeout, bind_ip=bind_ip)),
-                ("curl-bind", lambda: _curl_fetch(method, url, body=body, timeout=timeout, interface=bind_ip)),
-            ]
+        attempts.append(
+            ("curl-bind", lambda: _curl_fetch(method, url, body=body, timeout=timeout, interface=bind_ip))
         )
     attempts.extend(
         [
-            ("httpx", lambda: _httpx_fetch(method, url, json_body=json_body, timeout=timeout)),
-            ("requests", lambda: _requests_fetch(method, url, json_body=json_body, timeout=timeout)),
             ("curl", lambda: _curl_fetch(method, url, body=body, timeout=timeout)),
             ("curl6", lambda: _curl_fetch(method, url, body=body, timeout=timeout, ip_version=6)),
             ("curl4", lambda: _curl_fetch(method, url, body=body, timeout=timeout, ip_version=4)),
@@ -566,7 +663,7 @@ def _yahoo_ticker_symbol(symbol: str) -> str:
 
 
 def _yahoo_session_fields(symbol: str) -> dict[str, Any]:
-    t = yf.Ticker(_yahoo_ticker_symbol(symbol))
+    t = _yf_ticker(_yahoo_ticker_symbol(symbol))
     try:
         info = t.info or {}
     except Exception:
@@ -664,7 +761,7 @@ def _enrich_quotes_session(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _yahoo_info_extended_price(symbol: str, session: str) -> float | None:
-    t = yf.Ticker(_yahoo_ticker_symbol(symbol))
+    t = _yf_ticker(_yahoo_ticker_symbol(symbol))
     try:
         info = t.info or {}
     except Exception:
@@ -697,7 +794,7 @@ def _yahoo_prepost_download_marks(symbols: list[str]) -> dict[str, float]:
     orig = { _yahoo_ticker_symbol(s): s.strip().upper().split(":")[-1] for s in symbols }
     out: dict[str, float] = {}
     if len(yf_syms) == 1:
-        df = yf.download(
+        df = _yf_download(
             yf_syms[0],
             period=period,
             interval="1m",
@@ -710,7 +807,7 @@ def _yahoo_prepost_download_marks(symbols: list[str]) -> dict[str, float]:
         if isinstance(px, (int, float)) and px > 0:
             out[orig[yf_syms[0]]] = float(px)
         return out
-    df = yf.download(
+    df = _yf_download(
         yf_syms,
         period=period,
         interval="1m",
@@ -783,7 +880,7 @@ def _yahoo_extended_marks(symbols: list[str]) -> dict[str, float]:
 
 def _yahoo_quote(symbol: str) -> dict[str, Any]:
     ticker_sym = _yahoo_ticker_symbol(symbol)
-    t = yf.Ticker(ticker_sym)
+    t = _yf_ticker(ticker_sym)
 
     try:
         fi = t.fast_info
@@ -879,7 +976,7 @@ def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
     yf_sym = _yahoo_ticker_symbol(symbol)
     session = _us_equity_session()
     prepost = interval not in ("1d", "1wk") and session != "rth"
-    df = yf.download(
+    df = _yf_download(
         yf_sym,
         period=period,
         interval=interval,
@@ -948,7 +1045,7 @@ def _yahoo_download_close(symbol: str) -> dict[str, Any]:
     ticker_sym = _yahoo_ticker_symbol(symbol)
     for period in ("5d", "1mo", "3mo", "6mo", "1y", "max"):
         try:
-            df = yf.download(
+            df = _yf_download(
                 ticker_sym,
                 period=period,
                 interval="1d",
@@ -1161,33 +1258,10 @@ def _best_quote(symbol: str) -> dict[str, Any]:
     )
     if POLYGON_KEY:
         attempts.append(("polygon-prev", _polygon_prev_quote))
-    rank = {name: i for i, (name, _) in enumerate(attempts)}
-    found: dict[str, dict[str, Any]] = {}
-
-    if len(attempts) == 1:
-        result = _try_quote_source(attempts[0][1], symbol)
+    for _name, fn in attempts:
+        result = _try_quote_source(fn, symbol)
         if result:
             return result
-    else:
-        with ThreadPoolExecutor(max_workers=min(6, len(attempts))) as pool:
-            futs = {pool.submit(_try_quote_source, fn, symbol): name for name, fn in attempts}
-            try:
-                for fut in as_completed(futs, timeout=12):
-                    name = futs[fut]
-                    try:
-                        result = fut.result()
-                    except Exception:
-                        continue
-                    if not result:
-                        continue
-                    found[name] = result
-                    if name == "polygon":
-                        return result
-            except TimeoutError:
-                pass
-    if found:
-        return min(found.items(), key=lambda kv: rank.get(kv[0], 99))[1]
-
     raise RuntimeError(f"No quote for {yf_sym}")
 
 
@@ -1197,7 +1271,7 @@ def _best_quotes(symbols: list[str]) -> list[dict[str, Any]]:
     if len(symbols) == 1:
         return [_best_quote(symbols[0])]
     out: dict[str, dict[str, Any]] = {}
-    workers = min(8, len(symbols))
+    workers = min(4, len(symbols))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futs = {pool.submit(_best_quote, sym): sym for sym in symbols}
         for fut in as_completed(futs):
@@ -1468,7 +1542,7 @@ def profile(symbol: str):
     yf_sym = symbol.strip().upper().split(":")[-1]
 
     def fetch():
-        t = yf.Ticker(yf_sym)
+        t = _yf_ticker(yf_sym)
         info = t.info or {}
         keys = [
             "longName",
@@ -1536,7 +1610,7 @@ def news(symbol: str, limit: int = 12):
     limit = max(1, min(limit, 25))
 
     def fetch():
-        t = yf.Ticker(yf_sym)
+        t = _yf_ticker(yf_sym)
         items = []
         for n in (t.news or [])[:limit]:
             content = n.get("content") or n
@@ -1756,7 +1830,7 @@ def _options_block(t: yf.Ticker | str) -> dict[str, Any]:
     symbol = (t if isinstance(t, str) else getattr(t, "ticker", None) or str(t)).strip().upper().split(":")[-1]
     last = _empty_options("Yahoo options unavailable")
     for attempt in range(3):
-        last = _options_from_ticker(yf.Ticker(symbol))
+        last = _options_from_ticker(_yf_ticker(symbol))
         if last.get("expiry") or last.get("items") or last.get("call_volume") or last.get("put_volume"):
             return last
         if attempt < 2:
@@ -1891,7 +1965,7 @@ def _macro_context() -> dict[str, Any]:
 
 def _build_llm_context(yf_sym: str) -> dict[str, Any]:
     quote = _best_quote(yf_sym)
-    t = yf.Ticker(yf_sym)
+    t = _yf_ticker(yf_sym)
     info: dict[str, Any] = {}
     try:
         info = t.info or {}
@@ -2050,7 +2124,7 @@ def deep(symbol: str):
 
     def fetch():
         def yahoo_bundle():
-            t = yf.Ticker(yf_sym)
+            t = _yf_ticker(yf_sym)
             try:
                 info = t.info or {}
             except Exception:
@@ -2192,7 +2266,7 @@ def _vibe_research_pack(pid: str) -> dict[str, Any]:
     fund = portfolio_mod.get_portfolio(pid, live=True)
 
     def news_fn(symbol: str) -> list[dict[str, Any]]:
-        return _news_items(yf.Ticker(symbol), 4)
+        return _news_items(_yf_ticker(symbol), 4)
 
     def ta_fn(symbol: str) -> dict[str, Any]:
         try:

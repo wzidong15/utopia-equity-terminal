@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="docs/logo-stacked.svg">
+    <img src="docs/logo-stacked-dark.svg" width="280" alt="Fintopia">
+  </picture>
+</p>
+
 # Fintopia
 
 Local US-stock research terminal: quotes, charts, movers, watchlist, a stock portfolio simulator, and optional LLM / heuristic analysis.
@@ -8,7 +15,7 @@ This is a research UI, not a broker. **Not financial advice.** Data can be delay
 
 ## Features
 
-- GitHub-style light UI: watchlist, US movers (gainers / losers / active), index strip (SPY, QQQ, DIA, IWM, VIX)
+- GitHub-style dark UI: watchlist, US movers (gainers / losers / active), index strip (SPY, QQQ, DIA, IWM, VIX)
 - Watchlist persisted in the browser (`localStorage`); add with ★, remove with ×
 - Search by ticker or name
 - OHLCV chart; default range is **1D** (`1d` / `5d` / `1mo` / `3mo` / `6mo` / `1y` / `5y`)
@@ -77,6 +84,7 @@ cp .env.example .env
 | `FINTOPIA_CHART_REFRESH_SEC` | Stock charts, NAV chart, and portfolio performance poll in seconds (default `30`). |
 | `FINTOPIA_STRATEGY_INTERVAL_SEC` | How often auto paper strategies try a step while the server is up (default `3600` = 1 hour). |
 | `FINTOPIA_DATA_DIR` | Local JSON dir for paper funds and the Congress PTR cache (default `~/.fintopia`). |
+| `FINTOPIA_HTTP_POOL_SIZE` | Keep-alive connection pool for outbound quote HTTP (default `20`, clamp 2–128). |
 | `POLYGON_API_KEY` or `MASSIVE_API_KEY` | Last-trade snapshots (realtime when the plan allows) |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM research and Vibe dialogs (default model `gpt-4.1`) |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | LLM research and Vibe dialogs (default `claude-opus-4-20250514`) |
