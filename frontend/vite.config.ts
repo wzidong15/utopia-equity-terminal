@@ -7,7 +7,7 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 export default defineConfig({
   plugins: [react()],
   envDir: repoRoot,
-  envPrefix: ["VITE_", "FINTOPIA_", "UTOPIA_"],
+  envPrefix: ["VITE_", "ZINTOPIA_", "FINTOPIA_", "UTOPIA_"],
   server: {
     host: "localhost",
     port: 5173,

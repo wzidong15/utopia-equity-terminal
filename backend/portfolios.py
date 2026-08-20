@@ -55,7 +55,12 @@ def configure(
 
 
 def _strategy_interval_sec() -> float:
-    raw = (os.environ.get("FINTOPIA_STRATEGY_INTERVAL_SEC") or os.environ.get("UTOPIA_STRATEGY_INTERVAL_SEC") or "3600").strip()
+    raw = (
+        os.environ.get("ZINTOPIA_STRATEGY_INTERVAL_SEC")
+        or os.environ.get("FINTOPIA_STRATEGY_INTERVAL_SEC")
+        or os.environ.get("UTOPIA_STRATEGY_INTERVAL_SEC")
+        or "3600"
+    ).strip()
     try:
         sec = float(raw)
     except ValueError:
@@ -68,7 +73,7 @@ def start_scheduler() -> None:
     if _scheduler and _scheduler.is_alive():
         return
     _stop.clear()
-    _scheduler = threading.Thread(target=_scheduler_loop, name="fintopia-auto-strategy", daemon=True)
+    _scheduler = threading.Thread(target=_scheduler_loop, name="zintopia-auto-strategy", daemon=True)
     _scheduler.start()
 
 
@@ -108,10 +113,22 @@ class StrategyBody(BaseModel):
 
 
 def _data_dir() -> Path:
-    override = (os.environ.get("FINTOPIA_DATA_DIR") or os.environ.get("UTOPIA_DATA_DIR") or "").strip()
+    override = (
+        os.environ.get("ZINTOPIA_DATA_DIR")
+        or os.environ.get("FINTOPIA_DATA_DIR")
+        or os.environ.get("UTOPIA_DATA_DIR")
+        or ""
+    ).strip()
     if override:
         return Path(override).expanduser().resolve()
-    return Path.home() / ".fintopia"
+    new = Path.home() / ".zintopia"
+    old = Path.home() / ".fintopia"
+    if not new.exists() and old.exists():
+        try:
+            old.rename(new)
+        except OSError:
+            return old
+    return new
 
 
 def _data_file() -> Path:

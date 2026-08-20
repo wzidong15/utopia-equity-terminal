@@ -1,6 +1,6 @@
 """Official STOCK Act PTR trades: House Clerk ZIP/PDFs + Senate eFD.
 
-Cached under ~/.fintopia (or FINTOPIA_DATA_DIR). Deep analysis reads the cache;
+Cached under ~/.zintopia (or ZINTOPIA_DATA_DIR). Deep analysis reads the cache;
 refresh runs in a background thread so ticker lookups stay fast.
 """
 
@@ -54,10 +54,22 @@ HOUSE_TYPE = {"P": "Purchase", "S": "Sale", "E": "Exchange"}
 
 
 def _data_dir() -> Path:
-    override = (os.environ.get("FINTOPIA_DATA_DIR") or os.environ.get("UTOPIA_DATA_DIR") or "").strip()
+    override = (
+        os.environ.get("ZINTOPIA_DATA_DIR")
+        or os.environ.get("FINTOPIA_DATA_DIR")
+        or os.environ.get("UTOPIA_DATA_DIR")
+        or ""
+    ).strip()
     if override:
         return Path(override).expanduser().resolve()
-    return Path.home() / ".fintopia"
+    new = Path.home() / ".zintopia"
+    old = Path.home() / ".fintopia"
+    if not new.exists() and old.exists():
+        try:
+            old.rename(new)
+        except OSError:
+            return old
+    return new
 
 
 def _cache_path() -> Path:
@@ -69,14 +81,14 @@ def _docs_path() -> Path:
 
 
 def _ttl_sec() -> float:
-    raw = (os.environ.get("FINTOPIA_CONGRESS_TTL_SEC") or "").strip()
+    raw = (os.environ.get("ZINTOPIA_CONGRESS_TTL_SEC") or os.environ.get("FINTOPIA_CONGRESS_TTL_SEC") or "").strip()
     if raw.isdigit():
         return float(raw)
     return float(TTL_SEC)
 
 
 def _lookback_days() -> int:
-    raw = (os.environ.get("FINTOPIA_CONGRESS_LOOKBACK_DAYS") or "").strip()
+    raw = (os.environ.get("ZINTOPIA_CONGRESS_LOOKBACK_DAYS") or os.environ.get("FINTOPIA_CONGRESS_LOOKBACK_DAYS") or "").strip()
     if raw.isdigit():
         return max(30, int(raw))
     return LOOKBACK_DAYS

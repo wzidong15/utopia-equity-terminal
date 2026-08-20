@@ -13,7 +13,7 @@ fi
 
 echo
 echo "API is not reachable."
-echo "Start it from the Fintopia folder in Terminal.app:"
+echo "Start it from the Zintopia folder in Terminal.app:"
 echo "  cd \"$ROOT\" && ./start.sh"
 echo
 echo "Note: this Mac binds the API on IPv6. Do not use curl -4 for localhost."

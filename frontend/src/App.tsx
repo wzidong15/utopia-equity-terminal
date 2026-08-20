@@ -460,7 +460,7 @@ export default function App() {
             src="/logo-horizontal.svg"
             width={138}
             height={32}
-            alt="Fintopia"
+            alt="Zintopia"
           />
           <span>US equities · stock portfolio</span>
         </div>

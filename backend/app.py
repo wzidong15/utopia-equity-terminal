@@ -50,7 +50,7 @@ async def _lifespan(_app: FastAPI):
     _close_http_pools()
 
 
-app = FastAPI(title="Fintopia", version="0.1.0", lifespan=_lifespan)
+app = FastAPI(title="Zintopia", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -125,7 +125,7 @@ def _env(*names: str, default: str = "") -> str:
 
 
 def _live_refresh_sec() -> float:
-    raw = _env("FINTOPIA_LIVE_REFRESH_SEC", "UTOPIA_LIVE_REFRESH_SEC", default="10")
+    raw = _env("ZINTOPIA_LIVE_REFRESH_SEC", "FINTOPIA_LIVE_REFRESH_SEC", "UTOPIA_LIVE_REFRESH_SEC", default="10")
     try:
         sec = float(raw)
     except ValueError:
@@ -134,7 +134,7 @@ def _live_refresh_sec() -> float:
 
 
 def _chart_refresh_sec() -> float:
-    raw = _env("FINTOPIA_CHART_REFRESH_SEC", "UTOPIA_CHART_REFRESH_SEC", default="30")
+    raw = _env("ZINTOPIA_CHART_REFRESH_SEC", "FINTOPIA_CHART_REFRESH_SEC", "UTOPIA_CHART_REFRESH_SEC", default="30")
     try:
         sec = float(raw)
     except ValueError:
@@ -181,8 +181,8 @@ def _clean(v: Any) -> Any:
     return v
 
 
-YAHOO_UA = "Mozilla/5.0 (compatible; Fintopia/1.0)"
-QUOTE_HTTP_TIMEOUT = float(_env("FINTOPIA_QUOTE_HTTP_TIMEOUT", "UTOPIA_QUOTE_HTTP_TIMEOUT", default="6") or "6")
+YAHOO_UA = "Mozilla/5.0 (compatible; Zintopia/1.0)"
+QUOTE_HTTP_TIMEOUT = float(_env("ZINTOPIA_QUOTE_HTTP_TIMEOUT", "FINTOPIA_QUOTE_HTTP_TIMEOUT", "UTOPIA_QUOTE_HTTP_TIMEOUT", default="6") or "6")
 TV_SCAN_HEADERS = {
     "accept": "application/json",
     "content-type": "application/json",
@@ -193,7 +193,7 @@ _requests_lock = threading.Lock()
 
 
 def _http_pool_size() -> int:
-    raw = _env("FINTOPIA_HTTP_POOL_SIZE", "UTOPIA_HTTP_POOL_SIZE", default="20")
+    raw = _env("ZINTOPIA_HTTP_POOL_SIZE", "FINTOPIA_HTTP_POOL_SIZE", "UTOPIA_HTTP_POOL_SIZE", default="20")
     try:
         n = int(raw)
     except ValueError:
@@ -209,8 +209,8 @@ def _http_keepalive() -> int:
 @lru_cache(maxsize=1)
 def _outbound_config() -> tuple[str | None, str | None]:
     """(interface_name, bind_ip) for broken macOS TCP source selection (Errno 49)."""
-    iface = _env("FINTOPIA_BIND_INTERFACE", "UTOPIA_BIND_INTERFACE") or None
-    ip = _env("FINTOPIA_BIND_IP", "UTOPIA_BIND_IP") or None
+    iface = _env("ZINTOPIA_BIND_INTERFACE", "FINTOPIA_BIND_INTERFACE", "UTOPIA_BIND_INTERFACE") or None
+    ip = _env("ZINTOPIA_BIND_IP", "FINTOPIA_BIND_IP", "UTOPIA_BIND_IP") or None
     if not ip:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:

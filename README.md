@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: light)" srcset="docs/logo-stacked.svg">
-    <img src="docs/logo-stacked-dark.svg" width="280" alt="Fintopia">
+    <img src="docs/logo-stacked-dark.svg" width="280" alt="Zintopia">
   </picture>
 </p>
 
@@ -11,7 +11,7 @@
   <a href="#chinese">中文</a>
 </p>
 
-# Fintopia
+# Zintopia
 
 <a id="english"></a>
 
@@ -50,7 +50,7 @@ chmod +x start.sh
 
 `start.sh` loads `.env` if present, creates `backend/.venv`, installs Python and npm deps, starts FastAPI on port 8000 (`--host ::`), then Vite on 5173 (Vite proxies `/api` to the backend).
 
-On macOS, `start.sh` sets `FINTOPIA_BIND_INTERFACE=en0` so outbound HTTPS can bind to Wi-Fi when automatic source-address selection fails (`Errno 49` / “Can't assign requested address”). Override with `FINTOPIA_BIND_INTERFACE=` or `FINTOPIA_BIND_IP=`. `UTOPIA_*` names still work as aliases.
+On macOS, `start.sh` sets `ZINTOPIA_BIND_INTERFACE=en0` so outbound HTTPS can bind to Wi-Fi when automatic source-address selection fails (`Errno 49` / “Can't assign requested address”). Override with `ZINTOPIA_BIND_INTERFACE=` or `ZINTOPIA_BIND_IP=`. `FINTOPIA_*` and `UTOPIA_*` names still work as aliases.
 
 ## Stock portfolio simulation
 
@@ -62,7 +62,7 @@ The **Stock portfolio** tab is a local paper-trading sandbox for **US stocks and
 4. Watch NAV, cash, unrealized P/L, max drawdown, the NAV chart, holdings, and the trade log.
 5. Use the **Vibe dialog** on the fund page. **Analyze fund** posts a structured review; type in the box to follow up on the same conversation (Yahoo quotes/news and daily TA, same US stack as [Vibe-Trading MCP](https://github.com/HKUDS/Vibe-Trading)). Requires `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. Click a ticker in the notes to load it into the paper order ticket.
 
-Performance (NAV chart and marked-to-market P/L) refreshes every 30 seconds (`FINTOPIA_CHART_REFRESH_SEC`). Auto strategies try a step every hour while `./start.sh` is running (`FINTOPIA_STRATEGY_INTERVAL_SEC`, default `3600`). Use **Run one step now** to force a strategy tick immediately.
+Performance (NAV chart and marked-to-market P/L) refreshes every 30 seconds (`ZINTOPIA_CHART_REFRESH_SEC`). Auto strategies try a step every hour while `./start.sh` is running (`ZINTOPIA_STRATEGY_INTERVAL_SEC`, default `3600`). Use **Run one step now** to force a strategy tick immediately.
 
 | Strategy | What it does |
 |---|---|
@@ -72,7 +72,7 @@ Performance (NAV chart and marked-to-market P/L) refreshes every 30 seconds (`FI
 | Momentum | Rotates into the top 3 US gainers, equal weight. |
 | RSI mean reversion | Buys ~25% of cash when RSI < 30; sells when RSI > 70. |
 
-Funds are stored locally in `~/.fintopia/portfolios.json` (outside the git repo). The same directory holds the Congress PTR cache (`congress_ptr.json`). Override with `FINTOPIA_DATA_DIR`. Deleting a fund in the UI removes it. Restarting the app does not reset paper cash or trades.
+Funds are stored locally in `~/.zintopia/portfolios.json` (outside the git repo). The same directory holds the Congress PTR cache (`congress_ptr.json`). Override with `ZINTOPIA_DATA_DIR`. Deleting a fund in the UI removes it. Restarting the app does not reset paper cash or trades.
 
 This is research / simulation only, and **shares only** (no options). **Not financial advice.** You can lose real money if you copy these ideas in a live account.
 
@@ -88,11 +88,11 @@ cp .env.example .env
 
 | Variable | Purpose |
 |---|---|
-| `FINTOPIA_LIVE_REFRESH_SEC` | Selected ticker **price** poll interval in seconds (default `10`). News and Daily TA stay on-demand. |
-| `FINTOPIA_CHART_REFRESH_SEC` | Stock charts, NAV chart, and portfolio performance poll in seconds (default `30`). |
-| `FINTOPIA_STRATEGY_INTERVAL_SEC` | How often auto paper strategies try a step while the server is up (default `3600` = 1 hour). |
-| `FINTOPIA_DATA_DIR` | Local JSON dir for paper funds and the Congress PTR cache (default `~/.fintopia`). |
-| `FINTOPIA_HTTP_POOL_SIZE` | Keep-alive connection pool for outbound quote HTTP (default `20`, clamp 2–128). |
+| `ZINTOPIA_LIVE_REFRESH_SEC` | Selected ticker **price** poll interval in seconds (default `10`). News and Daily TA stay on-demand. |
+| `ZINTOPIA_CHART_REFRESH_SEC` | Stock charts, NAV chart, and portfolio performance poll in seconds (default `30`). |
+| `ZINTOPIA_STRATEGY_INTERVAL_SEC` | How often auto paper strategies try a step while the server is up (default `3600` = 1 hour). |
+| `ZINTOPIA_DATA_DIR` | Local JSON dir for paper funds and the Congress PTR cache (default `~/.zintopia`). |
+| `ZINTOPIA_HTTP_POOL_SIZE` | Keep-alive connection pool for outbound quote HTTP (default `20`, clamp 2–128). |
 | `POLYGON_API_KEY` or `MASSIVE_API_KEY` | Last-trade snapshots (realtime when the plan allows) |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM research and Vibe dialogs (default model `gpt-4.1`) |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | LLM research and Vibe dialogs (default `claude-opus-4-20250514`) |
@@ -111,7 +111,7 @@ A free Polygon plan may still reject some snapshot endpoints (`NOT_AUTHORIZED`).
 | Movers | TradingView scanner, then Polygon gainers/losers if keyed |
 | Daily TA | tradingview-ta |
 | Profile, news, insiders, options, analyst targets | Yahoo Finance (`yfinance`) |
-| Senate / House PTR trades | Official STOCK Act filings: House Clerk `YYYYFD.zip` + PTR PDFs; Senate eFD search (`efdsearch.senate.gov`). These are **trades**, not live holdings; filers have up to 45 days to disclose. Cached in `~/.fintopia/congress_ptr.json` (refreshed in the background, default 120-day lookback) |
+| Senate / House PTR trades | Official STOCK Act filings: House Clerk `YYYYFD.zip` + PTR PDFs; Senate eFD search (`efdsearch.senate.gov`). These are **trades**, not live holdings; filers have up to 45 days to disclose. Cached in `~/.zintopia/congress_ptr.json` (refreshed in the background, default 120-day lookback) |
 | LLM research / Vibe dialogs | OpenAI or Anthropic when a key is set |
 | Paper stock-portfolio marks / fills | Regular hours: same quote stack as `/api/quote`. When the NYSE cash session is closed (Eastern time): Yahoo **pre-market** (4:00–9:30), **after hours** (16:00–20:00), or last extended print overnight/weekend. SMA strategies use Yahoo `yf.download` history |
 
@@ -156,7 +156,7 @@ backend/requirements.txt
 frontend/                Vite + React + Lightweight Charts
 start.sh                 Dev launcher (loads .env if present)
 .env.example             Key placeholders — copy to .env locally
-~/.fintopia/             Local paper funds + PTR cache (not in git)
+~/.zintopia/             Local paper funds + PTR cache (not in git)
 ```
 
 ## Secrets
@@ -179,7 +179,7 @@ Deep analysis and LLM output are research aids over public feeds. You can lose m
   <b>中文</b>
 </p>
 
-# Fintopia（中文）
+# Zintopia（中文）
 
 本地美股研究终端：行情、K 线、涨跌榜、自选、股票组合模拟，以及可选的 LLM / 启发式分析。
 
@@ -216,7 +216,7 @@ chmod +x start.sh
 
 `start.sh` 若存在会加载 `.env`，创建 `backend/.venv`，安装 Python 与 npm 依赖，在 8000 端口启动 FastAPI（`--host ::`），再在 5173 启动 Vite（Vite 把 `/api` 代理到后端）。
 
-在 macOS 上，`start.sh` 会设置 `FINTOPIA_BIND_INTERFACE=en0`，以便自动源地址选择失败时（`Errno 49` / “Can't assign requested address”）出站 HTTPS 绑定到 Wi-Fi。可用 `FINTOPIA_BIND_INTERFACE=` 或 `FINTOPIA_BIND_IP=` 覆盖。`UTOPIA_*` 名称仍可作为别名。
+在 macOS 上，`start.sh` 会设置 `ZINTOPIA_BIND_INTERFACE=en0`，以便自动源地址选择失败时（`Errno 49` / “Can't assign requested address”）出站 HTTPS 绑定到 Wi-Fi。可用 `ZINTOPIA_BIND_INTERFACE=` 或 `ZINTOPIA_BIND_IP=` 覆盖。`FINTOPIA_*` 与 `UTOPIA_*` 名称仍可作为别名。
 
 ## 股票组合模拟
 
@@ -228,7 +228,7 @@ chmod +x start.sh
 4. 查看净值、现金、未实现盈亏、最大回撤、净值图、持仓与成交记录。
 5. 在组合页使用 **Vibe 对话**。**Analyze fund** 会提交结构化点评；在输入框继续提问即同一会话追问（Yahoo 行情/新闻与日线技术分析，数据栈与 [Vibe-Trading MCP](https://github.com/HKUDS/Vibe-Trading) 相同）。需要 `OPENAI_API_KEY` 或 `ANTHROPIC_API_KEY`。点击笔记中的代码，可填入模拟下单框。
 
-业绩（净值图与盯市盈亏）每 30 秒刷新（`FINTOPIA_CHART_REFRESH_SEC`）。`./start.sh` 运行期间，自动策略每小时尝试一步（`FINTOPIA_STRATEGY_INTERVAL_SEC`，默认 `3600`）。用 **Run one step now** 可立刻强制跑一步。
+业绩（净值图与盯市盈亏）每 30 秒刷新（`ZINTOPIA_CHART_REFRESH_SEC`）。`./start.sh` 运行期间，自动策略每小时尝试一步（`ZINTOPIA_STRATEGY_INTERVAL_SEC`，默认 `3600`）。用 **Run one step now** 可立刻强制跑一步。
 
 | 策略 | 行为 |
 |---|---|
@@ -238,7 +238,7 @@ chmod +x start.sh
 | Momentum | 等权轮动美股涨幅前 3。 |
 | RSI mean reversion | RSI < 30 时用约 25% 现金买入；RSI > 70 时卖出。 |
 
-组合存在本地 `~/.fintopia/portfolios.json`（不进 git）。同一目录还有国会 PTR 缓存（`congress_ptr.json`）。可用 `FINTOPIA_DATA_DIR` 覆盖。在界面删除组合即删除数据。重启应用不会清空模拟资金或成交。
+组合存在本地 `~/.zintopia/portfolios.json`（不进 git）。同一目录还有国会 PTR 缓存（`congress_ptr.json`）。可用 `ZINTOPIA_DATA_DIR` 覆盖。在界面删除组合即删除数据。重启应用不会清空模拟资金或成交。
 
 仅供研究 / 模拟，且 **只做正股**（无期权）。**不构成投资建议。** 若把这些想法用到实盘，可能亏真金。
 
@@ -254,11 +254,11 @@ cp .env.example .env
 
 | 变量 | 用途 |
 |---|---|
-| `FINTOPIA_LIVE_REFRESH_SEC` | 当前股票 **价格** 轮询间隔，秒（默认 `10`）。新闻与日线技术分析仍按需加载。 |
-| `FINTOPIA_CHART_REFRESH_SEC` | 股票图、净值图与组合业绩轮询间隔，秒（默认 `30`）。 |
-| `FINTOPIA_STRATEGY_INTERVAL_SEC` | 服务运行时自动策略尝试一步的间隔（默认 `3600` = 1 小时）。 |
-| `FINTOPIA_DATA_DIR` | 模拟组合与国会 PTR 缓存的本地 JSON 目录（默认 `~/.fintopia`）。 |
-| `FINTOPIA_HTTP_POOL_SIZE` | 出站行情 HTTP 的 keep-alive 连接池（默认 `20`，限制 2–128）。 |
+| `ZINTOPIA_LIVE_REFRESH_SEC` | 当前股票 **价格** 轮询间隔，秒（默认 `10`）。新闻与日线技术分析仍按需加载。 |
+| `ZINTOPIA_CHART_REFRESH_SEC` | 股票图、净值图与组合业绩轮询间隔，秒（默认 `30`）。 |
+| `ZINTOPIA_STRATEGY_INTERVAL_SEC` | 服务运行时自动策略尝试一步的间隔（默认 `3600` = 1 小时）。 |
+| `ZINTOPIA_DATA_DIR` | 模拟组合与国会 PTR 缓存的本地 JSON 目录（默认 `~/.zintopia`）。 |
+| `ZINTOPIA_HTTP_POOL_SIZE` | 出站行情 HTTP 的 keep-alive 连接池（默认 `20`，限制 2–128）。 |
 | `POLYGON_API_KEY` 或 `MASSIVE_API_KEY` | 最新成交快照（套餐允许时为实时） |
 | `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM 研究与 Vibe 对话（默认模型 `gpt-4.1`） |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | LLM 研究与 Vibe 对话（默认 `claude-opus-4-20250514`） |
@@ -277,7 +277,7 @@ cp .env.example .env
 | 涨跌榜 | TradingView scanner，有密钥时再试 Polygon 涨跌幅 |
 | 日线技术分析 | tradingview-ta |
 | 资料、新闻、内部人、期权、分析师目标价 | Yahoo Finance（`yfinance`） |
-| 参众两院 PTR 交易 | 官方 STOCK Act 申报：众议院书记官 `YYYYFD.zip` + PTR PDF；参议院 eFD 检索（`efdsearch.senate.gov`）。这些是 **交易**，不是实时持仓；申报人最多有 45 天披露期。缓存于 `~/.fintopia/congress_ptr.json`（后台刷新，默认回看 120 天） |
+| 参众两院 PTR 交易 | 官方 STOCK Act 申报：众议院书记官 `YYYYFD.zip` + PTR PDF；参议院 eFD 检索（`efdsearch.senate.gov`）。这些是 **交易**，不是实时持仓；申报人最多有 45 天披露期。缓存于 `~/.zintopia/congress_ptr.json`（后台刷新，默认回看 120 天） |
 | LLM 研究 / Vibe 对话 | 配置密钥后使用 OpenAI 或 Anthropic |
 | 模拟组合计价 / 成交 | 常规时段：与 `/api/quote` 相同行情栈。纽交所现金时段关闭时（东部时间）：Yahoo **盘前**（4:00–9:30）、**盘后**（16:00–20:00），或隔夜/周末最近一次延长时段成交价。SMA 策略使用 Yahoo `yf.download` 历史 |
 
@@ -322,7 +322,7 @@ backend/requirements.txt
 frontend/                Vite + React + Lightweight Charts
 start.sh                 开发启动脚本（若存在则加载 .env）
 .env.example             密钥占位 — 本地复制为 .env
-~/.fintopia/             本地模拟组合 + PTR 缓存（不进 git）
+~/.zintopia/             本地模拟组合 + PTR 缓存（不进 git）
 ```
 
 ## 密钥

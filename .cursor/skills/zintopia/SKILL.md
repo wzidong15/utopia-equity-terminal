@@ -1,21 +1,21 @@
 ---
-name: fintopia
-description: Builds and extends Fintopia, the US equity terminal (FastAPI + Vite React). Use when changing backend/app.py, the frontend, market-data sources, Polygon/Massive realtime quotes, TradingView screener, yfinance charts, or when the user asks to add panels to the stock website.
+name: zintopia
+description: Builds and extends Zintopia, the US equity terminal (FastAPI + Vite React). Use when changing backend/app.py, the frontend, market-data sources, Polygon/Massive realtime quotes, TradingView screener, yfinance charts, or when the user asks to add panels to the stock website.
 ---
 
-# Fintopia
+# Zintopia
 
-Local US-stock visualization app in this repo. Not OpenBB Workspace.
+Local US-stock visualization app in this repo. Not OpenBB Workspace. Formerly Fintopia.
 
 ## Stack
 
 - Backend: `backend/app.py` (FastAPI, port 8000)
 - Frontend: `frontend/` (Vite React, port 5173, proxies `/api`)
 - Run: `./start.sh` (loads repo-root `.env` if present)
-- Quote poll: `FINTOPIA_LIVE_REFRESH_SEC` (default 10; `UTOPIA_*` aliases still work). Chart + portfolio NAV: `FINTOPIA_CHART_REFRESH_SEC` (default 30).
+- Quote poll: `ZINTOPIA_LIVE_REFRESH_SEC` (default 10; `FINTOPIA_*` / `UTOPIA_*` aliases still work). Chart + portfolio NAV: `ZINTOPIA_CHART_REFRESH_SEC` (default 30).
 - Stock portfolio marks: Yahoo pre-market / after hours when the NYSE cash session is closed (America/New_York).
-- Paper funds persist in `~/.fintopia/portfolios.json` (not in git). Congress PTRs cache in `~/.fintopia/congress_ptr.json`. Optional `FINTOPIA_DATA_DIR`.
-- Outbound HTTP uses a process-wide httpx/requests pool (keep-alive; `FINTOPIA_HTTP_POOL_SIZE`, default 20). Quote sources run sequentially. Do not add per-call `httpx.Client()` / `requests.Session()` / curl on the quote path.
+- Paper funds persist in `~/.zintopia/portfolios.json` (not in git). Congress PTRs cache in `~/.zintopia/congress_ptr.json`. Optional `ZINTOPIA_DATA_DIR`. First launch renames `~/.fintopia` if present.
+- Outbound HTTP uses a process-wide httpx/requests pool (keep-alive; `ZINTOPIA_HTTP_POOL_SIZE`, default 20). Quote sources run sequentially. Do not add per-call `httpx.Client()` / `requests.Session()` / curl on the quote path.
 
 ## Data source priority
 
@@ -56,7 +56,7 @@ Do not claim unsigned TV/Yahoo quotes are exchange-realtime. UI footer must stay
 
 ## UI conventions
 
-GitHub dark canvas `#0D1117` with logo greens: `--accent` / `--up` `#56D364`, `--down` `#F85149`, text `#E6EDF3`. Header uses the dark horizontal lockup. No emoji. Keep the three-column layout (watchlist + movers | chart | TA/news).
+GitHub dark canvas `#0D1117` with logo greens: `--accent` / `--up` `#56D364`, `--down` `#F85149`, text `#E6EDF3`. Header uses the dark horizontal lockup (cut-out Z + Zin/topia wordmark). No emoji. Keep the three-column layout (watchlist + movers | chart | TA/news).
 
 ## MCP / keys
 

@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Fintopia">
-  <title>Fintopia</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Zintopia">
+  <title>Zintopia</title>
   <defs>
     <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
     <stop offset="0%" stop-color="#56D364"/>
@@ -9,9 +9,7 @@
   <g>
     <rect width="64" height="64" rx="15" fill="url(#g)"/>
     <g fill="#0D1117">
-      <rect x="18" y="13" width="11" height="38" rx="2"/>
-      <rect x="26" y="13" width="21" height="10" rx="2"/>
-      <rect x="26" y="31" width="13" height="10" rx="2"/>
+      <path d="M18 13h29a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H32.6L22.4 41H47a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H18a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h14.4L42.6 23H18a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2z"/>
     </g>
   </g>
 </svg>
