@@ -14,6 +14,7 @@ Local US-stock visualization app in this repo. Not OpenBB Workspace.
 - Run: `./start.sh` (loads repo-root `.env` if present)
 - Quote poll: `FINTOPIA_LIVE_REFRESH_SEC` (default 10; `UTOPIA_*` aliases still work). Chart + portfolio NAV: `FINTOPIA_CHART_REFRESH_SEC` (default 30).
 - Stock portfolio marks: Yahoo pre-market / after hours when the NYSE cash session is closed (America/New_York).
+- Paper funds persist in `~/.fintopia/portfolios.json` (not in git). Congress PTRs cache in `~/.fintopia/congress_ptr.json`. Optional `FINTOPIA_DATA_DIR`.
 
 ## Data source priority
 
@@ -41,7 +42,7 @@ Do not claim unsigned TV/Yahoo quotes are exchange-realtime. UI footer must stay
 | `GET /api/news/{symbol}` | Yahoo news |
 | `GET /api/ta/{symbol}` | TradingView summary |
 | `GET /api/search?q=` | Symbol search |
-| `GET /api/deep/{symbol}` | Insider (Yahoo Form 4), options (next 3 expiries), Congress (congressinvests.com), news, forecast, research stance |
+| `GET /api/deep/{symbol}` | Insider (Yahoo Form 4), options (next 3 expiries), Congress PTRs (House Clerk + Senate eFD), news, forecast, research stance |
 | `GET /api/snapshot` | Dashboard bundle |
 | `GET/POST /api/portfolios` | Stock paper funds (shares only, no options) |
 | `POST /api/portfolios/{id}/orders` | Simulated trades |

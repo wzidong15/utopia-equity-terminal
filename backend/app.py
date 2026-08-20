@@ -17,6 +17,7 @@ import subprocess
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time as dt_time
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -32,13 +33,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from tradingview_screener import Query, col
 from tradingview_ta import Interval, TA_Handler
 
+import congress_ptr
 import llm_advice
 import vibe_portfolio
 
 POLYGON_KEY = os.environ.get("POLYGON_API_KEY") or os.environ.get("MASSIVE_API_KEY") or ""
 POLYGON_BASE = os.environ.get("MASSIVE_API_BASE_URL") or "https://api.polygon.io"
 
-app = FastAPI(title="Fintopia", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    congress_ptr.kick_refresh()
+    yield
+
+
+app = FastAPI(title="Fintopia", version="0.1.0", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1598,57 +1607,17 @@ def ta(symbol: str, interval: str = "1d"):
 
 
 def _congress_block(symbol: str) -> dict[str, Any]:
-    needle = symbol.strip().upper()
-
-    def load():
-        url = f"https://congressinvests.com/trades/{needle}"
-        with httpx.Client(timeout=20.0, follow_redirects=True, headers={"User-Agent": "Fintopia/0.1"}) as client:
-            r = client.get(url, params={"limit": 50})
-            r.raise_for_status()
-            return r.json()
-
     try:
-        payload = _cached(f"congress:{needle}", 1800, load)
+        return congress_ptr.query(symbol)
     except Exception:
         return {
             "buy_count": 0,
             "sell_count": 0,
             "tilt": "neutral",
             "items": [],
-            "source": "congressinvests.com",
+            "source": "House Clerk + Senate eFD",
+            "status": "error",
         }
-    trades = payload.get("trades") if isinstance(payload, dict) else payload
-    if not isinstance(trades, list):
-        trades = []
-    items = []
-    net_buys = 0
-    net_sells = 0
-    for row in trades:
-        kind = str(row.get("trade_type") or row.get("type") or "")
-        low = kind.lower()
-        if "buy" in low or "purchase" in low:
-            net_buys += 1
-        elif "sell" in low or "sale" in low:
-            net_sells += 1
-        if len(items) < 12:
-            items.append(
-                {
-                    "date": row.get("tx_date") or row.get("disclosed") or row.get("transaction_date"),
-                    "chamber": row.get("chamber"),
-                    "person": row.get("member") or row.get("senator") or row.get("representative"),
-                    "type": kind,
-                    "amount": row.get("amount"),
-                    "asset": row.get("asset"),
-                }
-            )
-    tilt = "buy" if net_buys > net_sells else "sell" if net_sells > net_buys else "neutral"
-    return {
-        "buy_count": net_buys,
-        "sell_count": net_sells,
-        "tilt": tilt,
-        "items": items,
-        "source": "congressinvests.com",
-    }
 
 
 def _news_items(t: yf.Ticker, limit: int = 8) -> list[dict[str, Any]]:
@@ -2019,6 +1988,8 @@ def _build_llm_context(yf_sym: str) -> dict[str, Any]:
             "buy_count": congress.get("buy_count"),
             "sell_count": congress.get("sell_count"),
             "tilt": congress.get("tilt"),
+            "source": congress.get("source"),
+            "filed_through": congress.get("filed_through"),
             "recent": congress.get("items", [])[:5],
         },
         "forecast": forecast,
@@ -2144,7 +2115,10 @@ def deep(symbol: str):
         if hit:
             prev = hit[1] if isinstance(hit[1], dict) else {}
             opt = prev.get("options") or {}
-            ttl = 90.0 if opt.get("expiry") or opt.get("items") else 8.0
+            cong = prev.get("congress") or {}
+            opt_ok = bool(opt.get("expiry") or opt.get("items"))
+            cong_pending = cong.get("status") == "refreshing"
+            ttl = 8.0 if (not opt_ok or cong_pending) else 90.0
             if now - hit[0] < ttl:
                 return hit[1]
         value = fetch()

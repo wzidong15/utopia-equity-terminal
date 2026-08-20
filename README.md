@@ -57,7 +57,7 @@ Performance (NAV chart and marked-to-market P/L) refreshes every 30 seconds (`FI
 | Momentum | Rotates into the top 3 US gainers, equal weight. |
 | RSI mean reversion | Buys ~25% of cash when RSI < 30; sells when RSI > 70. |
 
-Funds are stored in `backend/data/portfolios.json` on this machine (gitignored). Deleting a fund in the UI removes it. Restarting the app does not reset paper cash or trades.
+Funds are stored locally in `~/.fintopia/portfolios.json` (outside the git repo). Override with `FINTOPIA_DATA_DIR`. Deleting a fund in the UI removes it. Restarting the app does not reset paper cash or trades.
 
 This is research / simulation only, and **shares only** (no options). **Not financial advice.** You can lose real money if you copy these ideas in a live account.
 
@@ -94,7 +94,7 @@ A free Polygon plan may still reject some snapshot endpoints (`NOT_AUTHORIZED`).
 | Movers | TradingView scanner, then Polygon gainers/losers if keyed |
 | Daily TA | tradingview-ta |
 | Profile, news, insiders, options, analyst targets | Yahoo Finance (`yfinance`) |
-| Senate / House trades | [congressinvests.com](https://congressinvests.com) public ticker feed |
+| Senate / House PTR trades | House Clerk `YYYYFD.zip` + PTR PDFs; Senate eFD search (`efdsearch.senate.gov`). Cached in `~/.fintopia/congress_ptr.json` |
 | LLM suggestion | OpenAI or Anthropic (only when a key is set and you click Generate) |
 | Paper stock-portfolio marks / fills | Regular hours: same quote stack as `/api/quote`. When the NYSE cash session is closed (Eastern time): Yahoo **pre-market** (4:00–9:30), **after hours** (16:00–20:00), or last extended print overnight/weekend. SMA strategies use Yahoo `yf.download` history |
 
@@ -133,7 +133,7 @@ Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
 ```
 backend/app.py          FastAPI app
 backend/portfolios.py  Stock portfolio simulation (shares only, no options)
-backend/data/          Local paper-fund JSON (gitignored)
+~/.fintopia/            Local paper-fund JSON (not in git)
 backend/llm_advice.py   OpenAI / Anthropic calls
 backend/requirements.txt
 frontend/               Vite + React + Lightweight Charts

@@ -192,10 +192,20 @@ export default function DeepPanel({
 
         <article>
           <div className="section-h">
-            Senate / House holdings
+            Senate / House PTR trades
             <span className="muted">
               {data.congress.buy_count ?? 0} buy · {data.congress.sell_count ?? 0} sell
+              {data.congress.status === "refreshing"
+                ? " · updating"
+                : data.congress.filed_through
+                  ? ` · filed through ${String(data.congress.filed_through).slice(0, 10)}`
+                  : ""}
             </span>
+          </div>
+          <div className="summary">
+            Periodic transaction reports from the House Clerk and Senate eFD, not live holdings.
+            {data.congress.source ? ` ${data.congress.source}.` : ""}
+            {data.congress.note ? ` ${data.congress.note}` : ""}
           </div>
           <table>
             <thead>
@@ -211,7 +221,13 @@ export default function DeepPanel({
                 <tr key={i}>
                   <td>{r.date || "—"}</td>
                   <td>
-                    {r.person || "—"}
+                    {r.link ? (
+                      <a href={r.link} target="_blank" rel="noreferrer">
+                        {r.person || "—"}
+                      </a>
+                    ) : (
+                      r.person || "—"
+                    )}
                     {r.chamber ? ` (${r.chamber})` : ""}
                   </td>
                   <td>{r.type || "—"}</td>
@@ -221,7 +237,9 @@ export default function DeepPanel({
               {data.congress.items.length === 0 && (
                 <tr>
                   <td colSpan={4} className="muted">
-                    No matching periodic transaction reports
+                    {data.congress.status === "refreshing"
+                      ? "Updating official periodic transaction reports…"
+                      : "No matching periodic transaction reports"}
                   </td>
                 </tr>
               )}

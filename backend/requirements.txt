@@ -7,3 +7,4 @@ tradingview-screener==3.0.0
 tradingview-ta==3.3.0
 httpx==0.28.1
 python-multipart==0.0.20
+pypdf==6.16.1

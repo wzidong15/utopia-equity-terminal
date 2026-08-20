@@ -10,4 +10,6 @@ __pycache__/
 .env
 .env.*
 !.env.example
+# Paper funds live in ~/.fintopia (outside the repo). Keep any leftover copy out of git.
 backend/data/
+backend/data/**

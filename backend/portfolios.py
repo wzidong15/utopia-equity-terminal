@@ -15,7 +15,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 DATA_DIR = Path(__file__).resolve().parent / "data"
-DATA_FILE = DATA_DIR / "portfolios.json"
+LEGACY_DATA_FILE = DATA_DIR / "portfolios.json"
 MAX_PORTFOLIOS = 20
 MAX_TRADES = 250
 MAX_SNAPSHOTS = 600
@@ -107,24 +107,45 @@ class StrategyBody(BaseModel):
     symbol: str = "SPY"
 
 
+def _data_dir() -> Path:
+    override = (os.environ.get("FINTOPIA_DATA_DIR") or os.environ.get("UTOPIA_DATA_DIR") or "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path.home() / ".fintopia"
+
+
+def _data_file() -> Path:
+    return _data_dir() / "portfolios.json"
+
+
 def _empty_store() -> dict[str, Any]:
     return {"portfolios": []}
 
 
+def _migrate_legacy_if_needed(dest: Path) -> None:
+    if dest.is_file() or not LEGACY_DATA_FILE.is_file():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(LEGACY_DATA_FILE.read_text())
+
+
 def _load() -> dict[str, Any]:
-    if not DATA_FILE.is_file():
+    path = _data_file()
+    _migrate_legacy_if_needed(path)
+    if not path.is_file():
         return _empty_store()
     try:
-        return json.loads(DATA_FILE.read_text())
+        return json.loads(path.read_text())
     except Exception:
         return _empty_store()
 
 
 def _save(store: dict[str, Any]) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    tmp = DATA_FILE.with_suffix(".tmp")
+    path = _data_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(store, indent=2, default=str))
-    tmp.replace(DATA_FILE)
+    tmp.replace(path)
 
 
 def _now() -> int:

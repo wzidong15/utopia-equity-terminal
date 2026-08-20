@@ -36,12 +36,19 @@ export type DeepAnalysis = {
     buy_count?: number;
     sell_count?: number;
     tilt?: string;
+    source?: string | null;
+    last_updated?: string | null;
+    filed_through?: string | null;
+    status?: string | null;
+    note?: string | null;
     items: {
       date?: string | null;
       chamber?: string | null;
       person?: string | null;
       type?: string | null;
       amount?: string | null;
+      filed?: string | null;
+      link?: string | null;
     }[];
   };
   news: { title?: string; url?: string | null; publisher?: string | null; published?: string | number | null }[];

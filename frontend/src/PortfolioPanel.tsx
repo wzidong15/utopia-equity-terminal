@@ -304,8 +304,8 @@ export default function PortfolioPanel({
         </div>
         {items.length === 0 && (
           <div className="watch-empty">
-            Create a stock portfolio with a name and starting cash. US stocks and ETFs only — options
-            are not supported.
+            Create a stock portfolio with a name and starting cash. Saved on this machine only
+            (not committed to git). US stocks and ETFs only — options are not supported.
           </div>
         )}
         {items.map((p) => (
