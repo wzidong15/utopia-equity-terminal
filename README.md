@@ -2,7 +2,7 @@
 
 Local US-stock research terminal: quotes, charts, movers, watchlist, a stock portfolio simulator, and optional LLM / heuristic analysis.
 
-Open [http://localhost:5173](http://localhost:5173) after starting the app. Click a ticker (or search) to load its quote and chart. Use **Stock portfolio** to create a paper fund (name + starting dollars), simulate share trades, or attach a simple automatic strategy. Options are not supported. Deep analysis loads when you select a stock. LLM suggestions run when you click Generate.
+Open [http://localhost:5173](http://localhost:5173) after starting the app. Click a ticker (or search) to load its quote and chart. Use **Stock portfolio** to create a paper fund (name + starting dollars), simulate share trades, or attach a simple automatic strategy. Options are not supported. Deep analysis loads when you select a stock. The LLM research dialog stays on the ticker page (starter chips plus follow-ups) when a key is set.
 
 This is a research UI, not a broker. **Not financial advice.** Data can be delayed, incomplete, or wrong.
 
@@ -14,8 +14,8 @@ This is a research UI, not a broker. **Not financial advice.** Data can be delay
 - OHLCV chart; default range is **1D** (`1d` / `5d` / `1mo` / `3mo` / `6mo` / `1y` / `5y`)
 - Daily TradingView technical rating, Yahoo news, and company profile
 - **Stock portfolio simulation**: virtual funds that buy and sell **shares** of US stocks and ETFs, with optional auto strategies, live NAV / P/L, and a **Vibe dialog** (Yahoo last/news + TradingView daily TA, then an LLM review you can follow up in the same conversation). Requires `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`. No options. Not a broker.
-- **Deep analysis**: insider Form 4 flow, option volume / put-call, Senate and House PTRs, analyst targets, headlines, and a heuristic stance (`ACCUMULATE` … `AVOID`)
-- **LLM research dialog**: type a question or use the BUY / SELL / LONG CALL / LONG PUT starter, with macro context (SPY, QQQ, DIA, IWM, VIX) via OpenAI or Anthropic, then follow-ups in the same conversation
+- **Deep analysis**: insider Form 4 flow, option volume / put-call, official Senate and House **periodic transaction reports** (not live holdings), analyst targets, headlines, and a heuristic stance (`ACCUMULATE` … `AVOID`)
+- **LLM research dialog**: type a question or use the BUY / SELL / LONG CALL / LONG PUT starter, with macro context (SPY, QQQ, DIA, IWM, VIX) via OpenAI or Anthropic, then follow-ups in the same conversation. Requires a key; use **Stop** to cancel an in-flight reply.
 
 Clicking a stock shows the header quote immediately when the ticker is already on the strip, watchlist, or movers. Charts and quotes cache briefly so switching back is faster.
 
@@ -57,7 +57,7 @@ Performance (NAV chart and marked-to-market P/L) refreshes every 30 seconds (`FI
 | Momentum | Rotates into the top 3 US gainers, equal weight. |
 | RSI mean reversion | Buys ~25% of cash when RSI < 30; sells when RSI > 70. |
 
-Funds are stored locally in `~/.fintopia/portfolios.json` (outside the git repo). Override with `FINTOPIA_DATA_DIR`. Deleting a fund in the UI removes it. Restarting the app does not reset paper cash or trades.
+Funds are stored locally in `~/.fintopia/portfolios.json` (outside the git repo). The same directory holds the Congress PTR cache (`congress_ptr.json`). Override with `FINTOPIA_DATA_DIR`. Deleting a fund in the UI removes it. Restarting the app does not reset paper cash or trades.
 
 This is research / simulation only, and **shares only** (no options). **Not financial advice.** You can lose real money if you copy these ideas in a live account.
 
@@ -76,9 +76,10 @@ cp .env.example .env
 | `FINTOPIA_LIVE_REFRESH_SEC` | Selected ticker **price** poll interval in seconds (default `10`). News and Daily TA stay on-demand. |
 | `FINTOPIA_CHART_REFRESH_SEC` | Stock charts, NAV chart, and portfolio performance poll in seconds (default `30`). |
 | `FINTOPIA_STRATEGY_INTERVAL_SEC` | How often auto paper strategies try a step while the server is up (default `3600` = 1 hour). |
+| `FINTOPIA_DATA_DIR` | Local JSON dir for paper funds and the Congress PTR cache (default `~/.fintopia`). |
 | `POLYGON_API_KEY` or `MASSIVE_API_KEY` | Last-trade snapshots (realtime when the plan allows) |
-| `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM suggestion (default model `gpt-4.1`) |
-| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | LLM suggestion (default `claude-opus-4-20250514`) |
+| `OPENAI_API_KEY` / `OPENAI_MODEL` | LLM research and Vibe dialogs (default model `gpt-4.1`) |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | LLM research and Vibe dialogs (default `claude-opus-4-20250514`) |
 | `LLM_PROVIDER` | `auto` (OpenAI first if both keys are set), `openai`, or `anthropic` |
 
 Free Polygon signup: https://polygon.io/dashboard/signup
@@ -94,8 +95,8 @@ A free Polygon plan may still reject some snapshot endpoints (`NOT_AUTHORIZED`).
 | Movers | TradingView scanner, then Polygon gainers/losers if keyed |
 | Daily TA | tradingview-ta |
 | Profile, news, insiders, options, analyst targets | Yahoo Finance (`yfinance`) |
-| Senate / House PTR trades | House Clerk `YYYYFD.zip` + PTR PDFs; Senate eFD search (`efdsearch.senate.gov`). Cached in `~/.fintopia/congress_ptr.json` |
-| LLM suggestion | OpenAI or Anthropic (only when a key is set and you click Generate) |
+| Senate / House PTR trades | Official STOCK Act filings: House Clerk `YYYYFD.zip` + PTR PDFs; Senate eFD search (`efdsearch.senate.gov`). These are **trades**, not live holdings; filers have up to 45 days to disclose. Cached in `~/.fintopia/congress_ptr.json` (refreshed in the background, default 120-day lookback) |
+| LLM research / Vibe dialogs | OpenAI or Anthropic when a key is set |
 | Paper stock-portfolio marks / fills | Regular hours: same quote stack as `/api/quote`. When the NYSE cash session is closed (Eastern time): Yahoo **pre-market** (4:00–9:30), **after hours** (16:00–20:00), or last extended print overnight/weekend. SMA strategies use Yahoo `yf.download` history |
 
 Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
@@ -116,7 +117,7 @@ Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
 | `GET /api/news/{symbol}` | Headlines |
 | `GET /api/ta/{symbol}` | Daily TA summary |
 | `GET /api/search?q=` | Symbol search |
-| `GET /api/deep/{symbol}` | Insiders, options, Congress, news, forecast, heuristic suggestion |
+| `GET /api/deep/{symbol}` | Insiders, options, official House/Senate PTRs, news, forecast, heuristic suggestion |
 | `POST /api/llm-advice/{symbol}` | Start LLM research conversation (BUY/SELL/LONG CALL/LONG PUT) |
 | `POST /api/llm-advice/{symbol}/chat` | Follow-up in the same `conversation_id` |
 | `GET /api/portfolios` | Stock portfolio summaries (marked to market) |
@@ -131,14 +132,15 @@ Do not treat unsigned TradingView or Yahoo prints as exchange-realtime.
 ## Repo layout
 
 ```
-backend/app.py          FastAPI app
-backend/portfolios.py  Stock portfolio simulation (shares only, no options)
-~/.fintopia/            Local paper-fund JSON (not in git)
-backend/llm_advice.py   OpenAI / Anthropic calls
+backend/app.py           FastAPI app
+backend/congress_ptr.py  House Clerk + Senate eFD PTR cache
+backend/portfolios.py    Stock portfolio simulation (shares only, no options)
+backend/llm_advice.py    OpenAI / Anthropic calls
 backend/requirements.txt
-frontend/               Vite + React + Lightweight Charts
-start.sh                Dev launcher (loads .env if present)
-.env.example            Key placeholders — copy to .env locally
+frontend/                Vite + React + Lightweight Charts
+start.sh                 Dev launcher (loads .env if present)
+.env.example             Key placeholders — copy to .env locally
+~/.fintopia/             Local paper funds + PTR cache (not in git)
 ```
 
 ## Secrets
