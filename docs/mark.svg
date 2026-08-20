@@ -8,8 +8,8 @@
   </defs>
   <g>
     <rect width="64" height="64" rx="15" fill="url(#g)"/>
-    <g fill="#0D1117">
-      <path d="M18 13h29a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H32.6L22.4 41H47a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H18a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2h14.4L42.6 23H18a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2z"/>
+    <g transform="translate(13.2105,52.8421) scale(0.052632,-0.052632)" fill="#0D1117">
+      <path d="M344 166H660V0H15L372 588H75V754H699Z"/>
     </g>
   </g>
 </svg>

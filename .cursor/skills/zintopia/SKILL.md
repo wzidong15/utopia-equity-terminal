@@ -56,7 +56,7 @@ Do not claim unsigned TV/Yahoo quotes are exchange-realtime. UI footer must stay
 
 ## UI conventions
 
-GitHub dark canvas `#0D1117` with logo greens: `--accent` / `--up` `#56D364`, `--down` `#F85149`, text `#E6EDF3`. Header uses the dark horizontal lockup (cut-out Z + Zin/topia wordmark). No emoji. Keep the three-column layout (watchlist + movers | chart | TA/news).
+GitHub dark canvas `#0D1117` with logo greens: `--accent` / `--up` `#56D364`, `--down` `#F85149`, text `#E6EDF3`. Header uses the dark horizontal lockup (Futura Bold Z mark + Zin/topia wordmark). No emoji. Keep the three-column layout (watchlist + movers | chart | TA/news).
 
 ## MCP / keys
 
