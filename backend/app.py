@@ -36,6 +36,7 @@ from tradingview_screener import Query, col
 from tradingview_ta import Interval, TA_Handler
 
 import congress_ptr
+import fundamentals as fundamentals_mod
 import llm_advice
 import vibe_portfolio
 
@@ -65,6 +66,30 @@ INDEX_TICKERS = {
     "IWM": "AMEX:IWM",
     "VIX": "CBOE:VIX",
 }
+
+TV_SECTORS = [
+    "Commercial Services",
+    "Communications",
+    "Consumer Durables",
+    "Consumer Non-Durables",
+    "Consumer Services",
+    "Distribution Services",
+    "Electronic Technology",
+    "Energy Minerals",
+    "Finance",
+    "Health Services",
+    "Health Technology",
+    "Industrial Services",
+    "Miscellaneous",
+    "Non-Energy Minerals",
+    "Process Industries",
+    "Producer Manufacturing",
+    "Retail Trade",
+    "Technology Services",
+    "Transportation",
+    "Utilities",
+]
+TV_EXTRA_COLS = ["price_sales_ratio", "earnings_release_next_date"]
 
 QUOTE_COLS = [
     "name",
@@ -179,6 +204,30 @@ def _clean(v: Any) -> Any:
         except Exception:
             return str(v)
     return v
+
+
+def _unix_ts(v: Any) -> int | None:
+    n = _clean(v)
+    if not isinstance(n, (int, float)) or n <= 0:
+        return None
+    ts = int(n)
+    if ts > 1_000_000_000_000:
+        ts //= 1000
+    return ts if ts > 1_000_000_000 else None
+
+
+def _next_earnings_unix(info: dict[str, Any]) -> int | None:
+    """Soonest Yahoo earnings timestamp that is still today or later; else the latest past print."""
+    cands: list[int] = []
+    for key in ("earningsTimestampStart", "earningsTimestamp", "earningsTimestampEnd"):
+        ts = _unix_ts(info.get(key))
+        if ts is not None:
+            cands.append(ts)
+    if not cands:
+        return None
+    today = int(time.time()) - 16 * 3600
+    future = [t for t in cands if t >= today]
+    return min(future) if future else max(cands)
 
 
 YAHOO_UA = "Mozilla/5.0 (compatible; Zintopia/1.0)"
@@ -554,6 +603,8 @@ def _row_to_quote(row: pd.Series) -> dict[str, Any]:
         "recommend_os": _clean(row.get("Recommend.Other")),
         "sector": _clean(row.get("sector")),
         "industry": _clean(row.get("industry")),
+        "ps": _clean(row.get("price_sales_ratio")),
+        "earnings_at": _tv_date_unix(row.get("earnings_release_next_date")),
         "prev_close": None,
         "regular_close": _clean(row.get("close")),
         "source": "tradingview-screener",
@@ -562,8 +613,34 @@ def _row_to_quote(row: pd.Series) -> dict[str, Any]:
     }
 
 
-def _tv_query(tickers: list[str] | None = None, extra_where=None, order=None, limit=50) -> pd.DataFrame:
-    q = Query().select(*QUOTE_COLS).set_markets("america")
+def _tv_date_unix(v: Any) -> int | None:
+    ts = _unix_ts(v)
+    if ts:
+        return ts
+    s = str(v or "").strip()
+    if not s or s.lower() in ("nan", "none", "nat"):
+        return None
+    for fmt in ("%Y-%m-%d", "%Y%m%d", "%Y-%m-%dT%H:%M:%S"):
+        try:
+            d = datetime.strptime(s[:19] if "T" in s else s[:10], fmt)
+            return int(d.replace(tzinfo=NYSE_TZ).timestamp())
+        except Exception:
+            continue
+    return None
+
+
+def _tv_query(
+    tickers: list[str] | None = None,
+    extra_where=None,
+    order=None,
+    limit=50,
+    extra_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    cols = list(QUOTE_COLS)
+    for name in extra_cols or []:
+        if name not in cols:
+            cols.append(name)
+    q = Query().select(*cols).set_markets("america")
     if tickers:
         q = q.set_tickers(*tickers)
     filters = []
@@ -574,10 +651,84 @@ def _tv_query(tickers: list[str] | None = None, extra_where=None, order=None, li
     if order:
         q = q.order_by(*order) if isinstance(order, tuple) else q.order_by(order)
     q = q.limit(limit)
-    _, df = _tv_get_scanner_data(q)
+    try:
+        _, df = _tv_get_scanner_data(q)
+    except Exception:
+        if extra_cols:
+            return _tv_query(tickers=tickers, extra_where=extra_where, order=order, limit=limit, extra_cols=None)
+        raise
     if df is None or df.empty:
         return pd.DataFrame()
     return df
+
+
+def _us_stock_filters(extra=None) -> list:
+    filters = [
+        col("type") == "stock",
+        col("is_primary") == True,  # noqa: E712
+        col("exchange").isin(["NASDAQ", "NYSE", "AMEX"]),
+    ]
+    if extra:
+        filters.extend(extra)
+    return filters
+
+
+def _overlay_tv_fields(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fill P/E, RVOL, sector, earnings date from one TradingView scan (watchlist / screen)."""
+    if not rows:
+        return rows
+    tickers: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        sym = str(row.get("symbol") or "").upper()
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        try:
+            tickers.append(resolve_tv_ticker(sym))
+        except Exception:
+            continue
+    if not tickers:
+        return rows
+    key = "tv-overlay:" + ",".join(sorted({t.split(":")[-1] for t in tickers}))
+
+    def fetch():
+        df = _tv_query(tickers=tickers, limit=max(len(tickers) + 4, 10), extra_cols=TV_EXTRA_COLS)
+        by: dict[str, dict[str, Any]] = {}
+        for _, src in df.iterrows():
+            q = _row_to_quote(src)
+            by[str(q.get("symbol") or "").upper()] = q
+        return by
+
+    try:
+        by = _cached(key, 60.0, fetch)
+    except Exception:
+        return rows
+    fill = (
+        "pe",
+        "eps",
+        "avg_volume",
+        "dividend_yield",
+        "rsi",
+        "sector",
+        "industry",
+        "perf_1m",
+        "market_cap",
+        "ps",
+        "earnings_at",
+    )
+    out: list[dict[str, Any]] = []
+    for q in rows:
+        extra = by.get(str(q.get("symbol") or "").upper(), {})
+        merged = dict(q)
+        for k in fill:
+            if merged.get(k) in (None, "") and extra.get(k) not in (None, ""):
+                merged[k] = extra[k]
+        extra_name = extra.get("name")
+        if extra_name and (not merged.get("name") or merged.get("name") == merged.get("symbol")):
+            merged["name"] = extra_name
+        out.append(merged)
+    return out
 
 
 @lru_cache(maxsize=512)
@@ -1428,7 +1579,7 @@ def quotes(symbols: str = Q(..., description="Comma-separated tickers")):
     if not raw:
         raise HTTPException(400, "No symbols")
     def fetch():
-        return _enrich_quotes_session(_best_quotes(raw[:40]))
+        return _overlay_tv_fields(_enrich_quotes_session(_best_quotes(raw[:40])))
 
     try:
         return {
@@ -1592,10 +1743,13 @@ def profile(symbol: str):
             "numberOfAnalystOpinions",
             "recommendationKey",
             "earningsTimestamp",
+            "earningsTimestampStart",
+            "earningsTimestampEnd",
         ]
         out = {k: _clean(info.get(k)) for k in keys}
         out["symbol"] = yf_sym
         out["source"] = "yfinance"
+        out["earnings_at"] = _next_earnings_unix(info)
         return out
 
     try:
@@ -1636,6 +1790,130 @@ def news(symbol: str, limit: int = 12):
         return _cached(f"news:{yf_sym}", 120, fetch)
     except Exception as e:
         raise HTTPException(502, f"News failed: {e}") from e
+
+
+@app.get("/api/fundamentals/{symbol}")
+def fundamentals(symbol: str):
+    yf_sym = symbol.strip().upper().split(":")[-1]
+
+    def fetch():
+        t = _yf_ticker(yf_sym)
+        info: dict[str, Any] = {}
+        try:
+            info = t.info or {}
+        except Exception:
+            info = {}
+        return fundamentals_mod.build_fundamentals(yf_sym, t, info, _clean, _next_earnings_unix)
+
+    try:
+        return _cached(f"fundamentals:{yf_sym}", 900, fetch)
+    except Exception as e:
+        raise HTTPException(502, f"Fundamentals failed: {e}") from e
+
+
+def _symbol_tv_sector(symbol: str) -> str | None:
+    try:
+        tv = resolve_tv_ticker(symbol)
+        df = _tv_query(tickers=[tv], limit=1)
+        if df is not None and not df.empty:
+            sector = _clean(df.iloc[0].get("sector"))
+            if sector:
+                return str(sector)
+    except Exception:
+        return None
+    return None
+
+
+@app.get("/api/peers/{symbol}")
+def peers(symbol: str, limit: int = 5):
+    yf_sym = symbol.strip().upper().split(":")[-1]
+    limit = max(3, min(limit, 8))
+
+    def fetch():
+        sector = _symbol_tv_sector(yf_sym)
+        if not sector:
+            return {"symbol": yf_sym, "sector": None, "items": [], "source": "tradingview-screener"}
+        df = _tv_query(
+            extra_where=_us_stock_filters(
+                [
+                    col("sector") == sector,
+                    col("market_cap_basic") > 500_000_000,
+                ]
+            ),
+            order=("market_cap_basic", False),
+            limit=limit + 10,
+            extra_cols=TV_EXTRA_COLS,
+        )
+        items: list[dict[str, Any]] = []
+        self_row: dict[str, Any] | None = None
+        if df is not None and not df.empty:
+            for _, row in df.iterrows():
+                q = _row_to_quote(row)
+                if str(q.get("symbol") or "").upper() == yf_sym:
+                    self_row = q
+                    continue
+                items.append(q)
+                if len(items) >= limit:
+                    break
+        if self_row:
+            items = [self_row, *items]
+        return {"symbol": yf_sym, "sector": sector, "items": items, "source": "tradingview-screener"}
+
+    try:
+        return _cached(f"peers:{yf_sym}:{limit}", 180, fetch)
+    except Exception as e:
+        raise HTTPException(502, f"Peers failed: {e}") from e
+
+
+@app.get("/api/screener")
+def screener(
+    sector: str | None = None,
+    cap_min: float | None = None,
+    pe_max: float | None = None,
+    rsi_min: float | None = None,
+    rsi_max: float | None = None,
+    change_min: float | None = None,
+    change_max: float | None = None,
+    order: Literal["change", "volume", "market_cap"] = "change",
+    limit: int = 20,
+):
+    limit = max(5, min(limit, 40))
+    sector = (sector or "").strip() or None
+    order_col = {"change": "change", "volume": "volume", "market_cap": "market_cap_basic"}[order]
+
+    def fetch():
+        wheres = _us_stock_filters([col("close") > 5, col("volume") > 100_000])
+        if sector:
+            wheres.append(col("sector") == sector)
+        if cap_min:
+            wheres.append(col("market_cap_basic") > cap_min)
+        if pe_max:
+            wheres.append(col("price_earnings_ttm") > 0)
+            wheres.append(col("price_earnings_ttm") < pe_max)
+        if rsi_min is not None:
+            wheres.append(col("RSI") >= rsi_min)
+        if rsi_max is not None:
+            wheres.append(col("RSI") <= rsi_max)
+        if change_min is not None:
+            wheres.append(col("change") >= change_min)
+        if change_max is not None:
+            wheres.append(col("change") <= change_max)
+        df = _tv_query(
+            extra_where=wheres,
+            order=(order_col, False),
+            limit=limit,
+            extra_cols=TV_EXTRA_COLS,
+        )
+        items = [_row_to_quote(r) for _, r in df.iterrows()] if df is not None and not df.empty else []
+        return {"items": items, "source": "tradingview-screener", "sectors": TV_SECTORS}
+
+    cache_key = (
+        f"screen:{sector}:{cap_min}:{pe_max}:{rsi_min}:{rsi_max}:{change_min}:{change_max}:{order}:{limit}"
+    )
+    try:
+        return _cached(cache_key, 45, fetch)
+    except Exception as e:
+        raise HTTPException(502, f"Screener failed: {e}") from e
 
 
 @app.get("/api/ta/{symbol}")
@@ -2129,7 +2407,7 @@ def deep(symbol: str):
                 info = t.info or {}
             except Exception:
                 info = {}
-            return info, _insider_block(t), _options_block(yf_sym), _news_items(t, 8)
+            return info, _insider_block(t), _options_block(yf_sym)
 
         def safe_quote():
             try:
@@ -2148,7 +2426,7 @@ def deep(symbol: str):
             quote_f = pool.submit(safe_quote)
             congress_f = pool.submit(_congress_block, yf_sym)
             ta_f = pool.submit(safe_ta)
-            info, insiders, options, news = yf_f.result()
+            info, insiders, options = yf_f.result()
             quote = quote_f.result()
             congress = congress_f.result()
             ta_data = ta_f.result()
@@ -2175,7 +2453,6 @@ def deep(symbol: str):
             "insiders": insiders,
             "options": options,
             "congress": congress,
-            "news": news,
             "forecast": forecast,
             "ta": {"label": ta_label, "rsi": quote.get("rsi") or rsi},
             "suggestion": suggestion,

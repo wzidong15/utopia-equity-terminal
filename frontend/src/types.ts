@@ -15,6 +15,8 @@ export type Quote = {
   pe?: number | null;
   eps?: number | null;
   dividend_yield?: number | null;
+  earnings_at?: number | null;
+  ps?: number | null;
   year_high?: number | null;
   year_low?: number | null;
   perf_w?: number | null;

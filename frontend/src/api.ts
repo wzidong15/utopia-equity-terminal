@@ -1,4 +1,5 @@
 import type { DeepAnalysis } from "./deep";
+import type { Fundamentals, PeerList, ScreenerResult } from "./fundamentals";
 import type { LlmAdviceChatResponse, LlmAdviceResponse, VibePortfolioChatResponse, VibePortfolioResponse } from "./llm";
 import type { Portfolio, PortfolioStrategyKind, PortfolioSummary } from "./portfolio";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
@@ -87,6 +88,10 @@ export const api = {
       `/api/history/${encodeURIComponent(symbol)}?range=${range}`,
     ),
   profile: (symbol: string) => getJson<Profile>(`/api/profile/${encodeURIComponent(symbol)}`),
+  fundamentals: (symbol: string) =>
+    getJson<Fundamentals>(`/api/fundamentals/${encodeURIComponent(symbol)}`),
+  peers: (symbol: string) => getJson<PeerList>(`/api/peers/${encodeURIComponent(symbol)}`),
+  screener: (query: string) => getJson<ScreenerResult>(`/api/screener${query ? `?${query}` : ""}`),
   news: (symbol: string) =>
     getJson<{ items: NewsItem[] }>(`/api/news/${encodeURIComponent(symbol)}`),
   ta: (symbol: string) => getJson<TA>(`/api/ta/${encodeURIComponent(symbol)}?interval=1d`),

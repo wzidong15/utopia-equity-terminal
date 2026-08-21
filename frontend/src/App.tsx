@@ -4,35 +4,21 @@ import Chart from "./Chart";
 import PortfolioPanel from "./PortfolioPanel";
 import DeepPanel from "./DeepPanel";
 import LlmAdvicePanel from "./LlmAdvicePanel";
+import FundamentalsPanel from "./FundamentalsPanel";
+import ScreenerPanel from "./ScreenerPanel";
 import type { DeepAnalysis } from "./deep";
+import type { Fundamentals, PeerList } from "./fundamentals";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
 import { loadWatchlist, removeFromWatchlist, saveWatchlist, toggleWatchlistSymbol } from "./watchlist";
 import { getCachedQuote, partialFromSearch, rememberQuote, rememberQuotes } from "./quoteCache";
 import { fetchBars, getCachedBars, prefetchBars } from "./chartCache";
 import { CHART_REFRESH_MS, LIVE_REFRESH_MS } from "./config";
 import { marketClock } from "./marketSession";
-const RANGES = ["1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"] as const;
+import { cls, dividendYieldPct, fmt, fmtEarnings, fmtInt, numish, pct, rvol } from "./format";
+const RANGES = ["1h", "3h", "1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"] as const;
 
-function fmt(n?: number | null, d = 2) {
-  if (n == null || Number.isNaN(n)) return "—";
-  return n.toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d });
-}
-function fmtInt(n?: number | null) {
-  if (n == null) return "—";
-  if (Math.abs(n) >= 1e12) return `${(n / 1e12).toFixed(2)}T`;
-  if (Math.abs(n) >= 1e9) return `${(n / 1e9).toFixed(2)}B`;
-  if (Math.abs(n) >= 1e6) return `${(n / 1e6).toFixed(2)}M`;
-  if (Math.abs(n) >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
-  return n.toLocaleString();
-}
-function pct(n?: number | null) {
-  if (n == null) return "—";
-  const sign = n > 0 ? "+" : "";
-  return `${sign}${n.toFixed(2)}%`;
-}
-function cls(n?: number | null) {
-  if (n == null) return "";
-  return n >= 0 ? "up" : "down";
+function ohlcvRange(range: (typeof RANGES)[number]) {
+  return range === "1h" || range === "3h" ? "1d" : range;
 }
 function taBadgeClass(label?: string | null) {
   if (!label) return "badge ta-neutral";
@@ -105,6 +91,7 @@ function QuoteRow({
   watched,
   onToggleWatch,
   onRemoveWatch,
+  dense,
 }: {
   q: Quote;
   selected?: boolean;
@@ -112,14 +99,24 @@ function QuoteRow({
   watched?: boolean;
   onToggleWatch?: (s: string) => void;
   onRemoveWatch?: (s: string) => void;
+  dense?: boolean;
 }) {
+  const rv = rvol(q);
   return (
     <div className={`row ${selected ? "sel" : ""}`}>
-      <button type="button" className="row-main" onClick={() => onPick(q.symbol, q)}>
+      <button type="button" className={`row-main${dense ? " dense" : ""}`} onClick={() => onPick(q.symbol, q)}>
         <span className="sym">{q.symbol}</span>
         <span>
           <div className="px">{fmt(q.price)}</div>
-          <div className="meta">{q.name}</div>
+          {dense ? (
+            <div className="row-metrics">
+              <span>P/E {fmt(q.pe, 1)}</span>
+              <span className={rv == null ? "" : cls(rv - 1)}>{rv == null ? "RVOL —" : `${rv.toFixed(2)}×`}</span>
+              <span>{fmtEarnings(q.earnings_at)}</span>
+            </div>
+          ) : (
+            <div className="meta">{q.name}</div>
+          )}
         </span>
         <span className={`px ${cls(q.change_pct)}`}>{pct(q.change_pct)}</span>
       </button>
@@ -177,7 +174,7 @@ function applyLiveLast(bars: Bar[], quote: Quote | null, symbol: string): Bar[] 
 export default function App() {
   const [symbol, setSymbol] = useState("AAPL");
   const [range, setRange] = useState<(typeof RANGES)[number]>("1d");
-  const [board, setBoard] = useState<"gainers" | "losers" | "active">("gainers");
+  const [board, setBoard] = useState<"gainers" | "losers" | "active" | "screen">("gainers");
   const [indices, setIndices] = useState<Quote[]>([]);
   const [watchSymbols, setWatchSymbols] = useState<string[]>(() => loadWatchlist());
   const [watch, setWatch] = useState<Quote[]>([]);
@@ -194,6 +191,9 @@ export default function App() {
   const [deep, setDeep] = useState<DeepAnalysis | null>(null);
   const [deepLoading, setDeepLoading] = useState(false);
   const [deepErr, setDeepErr] = useState<string | null>(null);
+  const [fundamentals, setFundamentals] = useState<Fundamentals | null>(null);
+  const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
+  const [peers, setPeers] = useState<PeerList | null>(null);
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<
     { symbol: string; name: string; exchange?: string; change_pct?: number }[]
@@ -225,6 +225,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    if (board === "screen") return;
     let live = true;
     setMoversLoading(true);
     setMoversErr(null);
@@ -319,23 +320,20 @@ export default function App() {
     const secondary = window.setTimeout(() => {
       api.news(symbol).then((n) => live && setNews(n.items)).catch(() => live && setNews([]));
       api.ta(symbol).then((t) => live && setTa(t)).catch(() => live && setTa(null));
-    }, 300);
-
-    const profileTimer = window.setTimeout(() => {
       api.profile(symbol).then((p) => live && setProfile(p)).catch(() => live && setProfile(null));
-    }, 700);
+    }, 300);
 
     return () => {
       live = false;
       clearInterval(quotePoll);
       window.clearTimeout(secondary);
-      window.clearTimeout(profileTimer);
     };
   }, [symbol]);
 
   useEffect(() => {
     let live = true;
-    const cached = getCachedBars(symbol, range);
+    const histRange = ohlcvRange(range);
+    const cached = getCachedBars(symbol, histRange);
     if (cached) {
       setBars(cached);
       setBarsLoading(false);
@@ -343,7 +341,7 @@ export default function App() {
       setBarsLoading(true);
     }
 
-    fetchBars(symbol, range)
+    fetchBars(symbol, histRange)
       .then((bars) => {
         if (!live) return;
         setBars(bars);
@@ -356,7 +354,7 @@ export default function App() {
       });
 
     const chartPoll = setInterval(() => {
-      fetchBars(symbol, range, { force: true })
+      fetchBars(symbol, histRange, { force: true })
         .then((next) => {
           if (!live) return;
           setBars(next);
@@ -393,6 +391,35 @@ export default function App() {
   }, [symbol]);
 
   useEffect(() => {
+    let live = true;
+    setFundamentals(null);
+    setFundamentalsLoading(true);
+    setPeers(null);
+    const t = window.setTimeout(() => {
+      api
+        .fundamentals(symbol)
+        .then((f) => {
+          if (!live) return;
+          setFundamentals(f);
+          setFundamentalsLoading(false);
+        })
+        .catch(() => {
+          if (!live) return;
+          setFundamentals(null);
+          setFundamentalsLoading(false);
+        });
+      api
+        .peers(symbol)
+        .then((p) => live && setPeers(p))
+        .catch(() => live && setPeers(null));
+    }, 400);
+    return () => {
+      live = false;
+      window.clearTimeout(t);
+    };
+  }, [symbol]);
+
+  useEffect(() => {
     if (!q.trim()) {
       setHits([]);
       return;
@@ -410,9 +437,9 @@ export default function App() {
       rememberQuote(instant);
       setQuote(instant);
     }
-    const cachedBars = getCachedBars(sym, range);
+    const cachedBars = getCachedBars(sym, ohlcvRange(range));
     if (cachedBars) setBars(cachedBars);
-    prefetchBars(sym, range);
+    prefetchBars(sym, ohlcvRange(range));
     setSymbol(sym);
   };
   const isWatched = (s: string) => watchSymbols.includes(s.trim().toUpperCase());
@@ -430,25 +457,32 @@ export default function App() {
       return next;
     });
   };
-  const stats = useMemo(
-    () => [
+  const stats = useMemo(() => {
+    const avgVol = quote?.avg_volume ?? numish(profile?.averageVolume);
+    const vol = quote?.volume;
+    const relVol = vol != null && avgVol != null && avgVol > 0 ? vol / avgVol : null;
+    const eps = quote?.eps ?? numish(profile?.trailingEps);
+    const pe = quote?.pe ?? numish(profile?.trailingPE);
+    const yieldPct = dividendYieldPct(quote, profile);
+    const earn = fmtEarnings(quote?.earnings_at ?? profile?.earnings_at ?? profile?.earningsTimestampStart ?? profile?.earningsTimestamp);
+    return [
       ["Close", fmt(quote?.regular_close)],
       ["Prev close", fmt(quote?.prev_close)],
       ["Open", fmt(quote?.open)],
       ["High", fmt(quote?.high)],
       ["Low", fmt(quote?.low)],
       ["Volume", fmtInt(quote?.volume)],
-      ["Mkt cap", fmtInt(quote?.market_cap)],
-      ["P/E", fmt(quote?.pe)],
+      ["RVOL", relVol == null ? "—" : `${relVol.toFixed(2)}×`, relVol == null ? undefined : cls(relVol - 1)],
+      ["Mkt cap", fmtInt(quote?.market_cap ?? numish(profile?.marketCap))],
+      ["P/E", fmt(pe)],
+      ["EPS", fmt(eps)],
+      ["Yield", yieldPct == null ? "—" : `${yieldPct.toFixed(2)}%`],
+      ["Earnings", earn],
       ["RSI", fmt(quote?.rsi, 1)],
-      ["SMA 20", fmt(quote?.sma20)],
-      ["SMA 50", fmt(quote?.sma50)],
-      ["SMA 200", fmt(quote?.sma200)],
-      ["52w high", fmt(quote?.year_high)],
-      ["52w low", fmt(quote?.year_low)],
-    ],
-    [quote],
-  );
+      ["52w high", fmt(quote?.year_high ?? numish(profile?.fiftyTwoWeekHigh))],
+      ["52w low", fmt(quote?.year_low ?? numish(profile?.fiftyTwoWeekLow))],
+    ] as [string, string, string?][];
+  }, [quote, profile]);
   const chartBars = useMemo(() => applyLiveLast(bars, quote, symbol), [bars, quote, symbol]);
 
   return (
@@ -570,34 +604,47 @@ export default function App() {
               selected={w.symbol === symbol}
               onPick={pick}
               onRemoveWatch={removeWatch}
+              dense
             />
           ))}
           <div className="section-h">
-            US movers
+            Universe
             <div className="tabs">
-              {(["gainers", "losers", "active"] as const).map((k) => (
+              {(["gainers", "losers", "active", "screen"] as const).map((k) => (
                 <button key={k} className={board === k ? "on" : ""} onClick={() => setBoard(k)}>
                   {k}
                 </button>
               ))}
             </div>
           </div>
-          {moversLoading && movers.length === 0 && (
-            <div className="watch-empty">Loading {board}…</div>
-          )}
-          {moversErr && movers.length === 0 && !moversLoading && (
-            <div className="watch-empty movers-err">Movers unavailable. Check network or API keys.</div>
-          )}
-          {movers.map((m) => (
-            <QuoteRow
-              key={m.ticker}
-              q={m}
-              selected={m.symbol === symbol}
+          {board === "screen" ? (
+            <ScreenerPanel
+              selected={symbol}
               onPick={pick}
-              watched={isWatched(m.symbol)}
+              watched={isWatched}
               onToggleWatch={toggleWatch}
             />
-          ))}
+          ) : (
+            <>
+              {moversLoading && movers.length === 0 && (
+                <div className="watch-empty">Loading {board}…</div>
+              )}
+              {moversErr && movers.length === 0 && !moversLoading && (
+                <div className="watch-empty movers-err">Movers unavailable. Check network or API keys.</div>
+              )}
+              {movers.map((m) => (
+                <QuoteRow
+                  key={m.ticker}
+                  q={m}
+                  selected={m.symbol === symbol}
+                  onPick={pick}
+                  watched={isWatched(m.symbol)}
+                  onToggleWatch={toggleWatch}
+                  dense
+                />
+              ))}
+            </>
+          )}
         </aside>
 
         <main className="center">
@@ -658,24 +705,32 @@ export default function App() {
             ))}
           </div>
           <div className="stats">
-            {stats.map(([k, v]) => (
+            {stats.map(([k, v, tone]) => (
               <div className="stat" key={k}>
                 <div className="k">{k}</div>
-                <div className="v">{v}</div>
+                <div className={`v ${tone || ""}`}>{v}</div>
               </div>
             ))}
           </div>
           <div className={`chart-wrap${barsLoading ? " chart-loading-active" : ""}`}>
             {barsLoading && bars.length === 0 && <div className="chart-loading">Loading chart…</div>}
-            <Chart bars={chartBars} />
-            {chartBars.some((b) => b.session === "pre" || b.session === "post") && (
-              <div className="muted chart-note">
-                Includes Yahoo pre-market (amber) and post-market (blue) candles.
-              </div>
-            )}
+            <Chart
+              bars={chartBars}
+              showVwap={range === "1d" || range === "1h" || range === "3h"}
+              focusHours={range === "1h" ? 1 : range === "3h" ? 3 : undefined}
+            />
+            <div className="muted chart-note">
+              SMA 20 / 50 / 200 on this chart interval
+              {range === "1d" || range === "1h" || range === "3h" ? " · VWAP regular session" : ""}
+              {range === "1h" || range === "3h" ? ` · zoomed to last ${range === "1h" ? "1 hour" : "3 hours"}` : ""}
+              {chartBars.some((b) => b.session === "pre" || b.session === "post")
+                ? " · Yahoo pre-market (amber) and post-market (blue) candles."
+                : "."}
+            </div>
           </div>
+          <FundamentalsPanel data={fundamentals} loading={fundamentalsLoading} />
           <LlmAdvicePanel symbol={symbol} />
-          <DeepPanel data={deep} loading={deepLoading} error={deepErr} />
+          <DeepPanel data={deep} loading={deepLoading} error={deepErr} peers={peers} onPickPeer={pick} />
         </main>
 
         <aside className="col">

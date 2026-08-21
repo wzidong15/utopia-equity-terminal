@@ -51,7 +51,6 @@ export type DeepAnalysis = {
       link?: string | null;
     }[];
   };
-  news: { title?: string; url?: string | null; publisher?: string | null; published?: string | number | null }[];
   forecast: {
     target_mean?: number | null;
     target_high?: number | null;

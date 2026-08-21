@@ -1,4 +1,6 @@
 import type { DeepAnalysis } from "./deep";
+import type { PeerList } from "./fundamentals";
+import { cls, fmt, fmtInt, pct } from "./format";
 
 function money(n?: number | null) {
   if (n == null || Number.isNaN(n)) return "—";
@@ -28,16 +30,20 @@ export default function DeepPanel({
   data,
   loading,
   error,
+  peers,
+  onPickPeer,
 }: {
   data: DeepAnalysis | null;
   loading: boolean;
   error?: string | null;
+  peers?: PeerList | null;
+  onPickPeer?: (symbol: string) => void;
 }) {
   if (loading) {
     return (
       <section className="deep" id="deep-analysis">
         <div className="section-h">Deep analysis</div>
-        <div className="summary">Loading insider, options, Congress, news, and forecast…</div>
+        <div className="summary">Loading insider, options, Congress, and forecast…</div>
       </section>
     );
   }
@@ -248,19 +254,47 @@ export default function DeepPanel({
         </article>
       </div>
 
-      <div className="section-h">Top news</div>
-      <div className="news">
-        {data.news.slice(0, 6).map((n, i) => (
-          <a key={i} href={n.url || "#"} target="_blank" rel="noreferrer">
-            {n.title}
-            <div className="src">
-              {n.publisher}
-              {n.published ? ` · ${String(n.published).slice(0, 16)}` : ""}
-            </div>
-          </a>
-        ))}
-        {data.news.length === 0 && <div className="summary">No headlines returned.</div>}
-      </div>
+      {peers && (
+        <article className="peer-block">
+          <div className="section-h">
+            Peers
+            <span className="muted">{peers.sector || "same sector"} · P/E · cap · 1M</span>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>P/E</th>
+                <th>Cap</th>
+                <th>P/S</th>
+                <th>1M</th>
+              </tr>
+            </thead>
+            <tbody>
+              {peers.items.map((p) => (
+                <tr
+                  key={p.ticker}
+                  className={p.symbol === data.symbol ? "peer-self" : "peer-row"}
+                  onClick={() => p.symbol !== data.symbol && onPickPeer?.(p.symbol)}
+                >
+                  <td className="sym">{p.symbol}</td>
+                  <td>{fmt(p.pe, 1)}</td>
+                  <td>{fmtInt(p.market_cap)}</td>
+                  <td>{fmt(p.ps, 1)}</td>
+                  <td className={cls(p.perf_1m)}>{pct(p.perf_1m)}</td>
+                </tr>
+              ))}
+              {peers.items.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="muted">
+                    No same-sector peers from TradingView
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </article>
+      )}
     </section>
   );
 }
