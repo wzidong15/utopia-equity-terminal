@@ -1122,6 +1122,21 @@ def _bar_session(ts: pd.Timestamp) -> str:
     return "rth"
 
 
+def _bar_unix(ts: pd.Timestamp) -> int | None:
+    """Unix seconds. Naive Yahoo dates are the ET trading day, not UTC midnight."""
+    t = pd.Timestamp(ts)
+    if pd.isna(t):
+        return None
+    if t.tzinfo is None:
+        try:
+            t = t.tz_localize(NYSE_TZ, ambiguous="NaT", nonexistent="shift_forward")
+        except Exception:
+            t = pd.Timestamp(ts)
+        if pd.isna(t):
+            return None
+    return int(t.timestamp())
+
+
 def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
     period, interval = RANGE_TO_YF[range]
     yf_sym = _yahoo_ticker_symbol(symbol)
@@ -1145,9 +1160,12 @@ def _yfinance_history_bars(symbol: str, range: str) -> dict[str, Any]:
     bars: list[dict[str, Any]] = []
     for _, r in df.iterrows():
         ts = pd.Timestamp(r[time_col])
+        unix = _bar_unix(ts)
+        if unix is None:
+            continue
         bars.append(
             {
-                "time": int(ts.timestamp()),
+                "time": unix,
                 "open": _clean(r.get("Open")),
                 "high": _clean(r.get("High")),
                 "low": _clean(r.get("Low")),
@@ -1806,7 +1824,7 @@ def fundamentals(symbol: str):
         return fundamentals_mod.build_fundamentals(yf_sym, t, info, _clean, _next_earnings_unix)
 
     try:
-        return _cached(f"fundamentals:{yf_sym}", 900, fetch)
+        return _cached(f"fundamentals:{yf_sym}:eh", 900, fetch)
     except Exception as e:
         raise HTTPException(502, f"Fundamentals failed: {e}") from e
 

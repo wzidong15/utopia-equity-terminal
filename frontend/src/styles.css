@@ -289,6 +289,65 @@ button { cursor: pointer; }
 }
 .pf-active .muted { margin-top: 2px; font-size: 12px; }
 
+.watch-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 10px 16px;
+  color: var(--muted);
+  background: var(--panel);
+  border-bottom: 1px solid var(--line-muted);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+}
+.watch-toolbar-k {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  flex: 0 0 auto;
+}
+.watch-sort {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font-weight: 500;
+}
+.watch-sort span {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.watch-sort select {
+  max-width: 168px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 550;
+  padding: 4px 6px;
+  border-radius: var(--radius);
+}
+.watch-cols {
+  display: grid;
+  grid-template-columns: 64px 1fr auto;
+  gap: 8px;
+  padding: 6px 36px 6px 14px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--line-muted);
+  background: var(--bg);
+}
+.watch-cols span.on {
+  color: var(--accent);
+}
+
 .section-h {
   display: flex;
   justify-content: space-between;

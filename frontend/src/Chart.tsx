@@ -8,6 +8,7 @@ import {
   type UTCTimestamp,
 } from "lightweight-charts";
 import { lastValue, rollingSma, sessionVwap } from "./chartOverlays";
+import { formatChartTick, formatChartTime } from "./format";
 import type { Bar } from "./types";
 
 const SMA20 = "#58A6FF";
@@ -60,7 +61,13 @@ export default function Chart({
         horzLines: { color: "#21262d" },
       },
       rightPriceScale: { borderColor: "#30363d" },
-      timeScale: { borderColor: "#30363d", timeVisible: true },
+      localization: { timeFormatter: formatChartTime },
+      timeScale: {
+        borderColor: "#30363d",
+        timeVisible: true,
+        rightOffset: 3,
+        tickMarkFormatter: formatChartTick,
+      },
       crosshair: { horzLine: { color: "#56d364" }, vertLine: { color: "#56d364" } },
     });
     const lineOpts = {
@@ -169,18 +176,23 @@ export default function Chart({
       sma200: lastValue(s200),
       vwap: lastValue(vw),
     });
-    chart.current?.timeScale().fitContent();
+    const scale = chart.current?.timeScale();
+    if (!scale) return;
     if (focusHours && data.length) {
-      const last = data[data.length - 1].time as number;
-      const from = Math.max(data[0].time as number, last - focusHours * 3600);
+      const lastTime = data[data.length - 1].time as number;
+      const cutoff = lastTime - focusHours * 3600;
+      let from = 0;
+      while (from < data.length && (data[from].time as number) < cutoff) from += 1;
+      const to = data.length - 1;
       try {
-        chart.current?.timeScale().setVisibleRange({
-          from: from as UTCTimestamp,
-          to: last as UTCTimestamp,
-        });
+        // Logical range keeps the newest 1m bar in view (time-range `to: last`
+        // clips it, so 1H/3H looked frozen while 1D fitContent still moved).
+        scale.setVisibleLogicalRange({ from: Math.max(0, from) - 0.2, to: to + 2 });
       } catch {
-        /* empty or degenerate window */
+        scale.fitContent();
       }
+    } else {
+      scale.fitContent();
     }
   }, [bars, showVwap, focusHours]);
 

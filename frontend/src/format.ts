@@ -56,6 +56,61 @@ export function dividendYieldPct(quote: Quote | null, profile: Profile | null): 
   return y <= 1 ? y * 100 : y;
 }
 
+export const MARKET_TZ = "America/New_York";
+
+type ChartTime = number | { year: number; month: number; day: number };
+
+function chartTimeMs(time: ChartTime): number {
+  if (typeof time === "number") return time * 1000;
+  return Date.UTC(time.year, time.month - 1, time.day);
+}
+
+function etParts(time: ChartTime, opts: Intl.DateTimeFormatOptions): Record<string, string> {
+  const bag: Record<string, string> = {};
+  for (const p of new Intl.DateTimeFormat("en-US", { timeZone: MARKET_TZ, ...opts }).formatToParts(new Date(chartTimeMs(time)))) {
+    if (p.type !== "literal") bag[p.type] = p.value;
+  }
+  return bag;
+}
+
+/** Crosshair time label in America/New_York. Daily bars omit midnight. */
+export function formatChartTime(time: ChartTime): string {
+  const p = etParts(time, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+    hourCycle: "h12",
+  });
+  const date = `${p.month} ${p.day}, ${p.year}`;
+  const hour = Number(p.hour);
+  const minute = p.minute || "00";
+  const am = (p.dayPeriod || "").toLowerCase().startsWith("a");
+  if (hour === 12 && am && minute === "00") return date;
+  return `${date} ${hour}:${minute} ${p.dayPeriod} ET`;
+}
+
+/** Time-axis ticks in America/New_York. tickMarkType matches lightweight-charts TickMarkType. */
+export function formatChartTick(time: ChartTime, tickMarkType: number): string {
+  if (tickMarkType === 0) return etParts(time, { year: "numeric" }).year;
+  if (tickMarkType === 1) return etParts(time, { month: "short" }).month;
+  if (tickMarkType === 2) {
+    const p = etParts(time, { month: "short", day: "numeric" });
+    return `${p.month} ${p.day}`;
+  }
+  const p = etParts(time, {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+    hourCycle: "h12",
+  });
+  if (tickMarkType === 4) return `${p.hour}:${p.minute}:${p.second} ${p.dayPeriod}`;
+  return `${p.hour}:${p.minute} ${p.dayPeriod}`;
+}
+
 export function fmtEarnings(ts: unknown): string {
   const n = numish(ts);
   if (n == null) return "—";

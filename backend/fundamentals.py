@@ -101,54 +101,151 @@ def _sum_flow(quarters: list[dict[str, Any]], keys: list[str]) -> dict[str, Any]
     return item
 
 
-def _earnings_history(ticker: Any, clean: CleanFn, limit: int = 8) -> list[dict[str, Any]]:
-    df = None
-    try:
-        df = ticker.get_earnings_dates(limit=limit)
-    except Exception:
-        try:
-            df = ticker.earnings_dates
-        except Exception:
-            df = None
-    if df is None or getattr(df, "empty", True):
-        return []
-    colmap = {str(c).strip().lower(): c for c in df.columns}
+def _colmap(df: pd.DataFrame) -> dict[str, Any]:
+    return {str(c).strip().lower().replace(" ", "").replace("%", ""): c for c in df.columns}
 
-    def col(*names: str):
-        for n in names:
-            if n in colmap:
-                return colmap[n]
+
+def _col(colmap: dict[str, Any], *names: str) -> Any:
+    for n in names:
+        key = n.strip().lower().replace(" ", "").replace("%", "")
+        if key in colmap:
+            return colmap[key]
+    return None
+
+
+def _unix(idx: Any) -> int | None:
+    try:
+        t = pd.Timestamp(idx)
+        if pd.isna(t):
+            return None
+        if t.tzinfo is None:
+            return int(t.timestamp())
+        return int(t.tz_convert("UTC").timestamp())
+    except Exception:
         return None
 
-    est_c = col("eps estimate", "eps estimate")
-    act_c = col("reported eps", "actual")
-    sur_c = col("surprise(%)", "surprise %", "surprise")
+
+def _surprise_pct(est: Any, act: Any, raw: Any, *, fraction: bool) -> Any:
+    surprise = raw
+    if surprise is None and isinstance(est, (int, float)) and isinstance(act, (int, float)) and est != 0:
+        surprise = (act - est) / abs(est)
+        fraction = True
+    if not isinstance(surprise, (int, float)):
+        return None
+    if fraction and abs(surprise) <= 5:
+        return surprise * 100.0
+    return surprise
+
+
+def _prints_from_frame(
+    df: pd.DataFrame,
+    clean: CleanFn,
+    *,
+    est_names: tuple[str, ...],
+    act_names: tuple[str, ...],
+    sur_names: tuple[str, ...],
+    fraction: bool,
+    event_filter: bool = False,
+) -> list[dict[str, Any]]:
+    if df is None or getattr(df, "empty", True):
+        return []
+    colmap = _colmap(df)
+    est_c = _col(colmap, *est_names)
+    act_c = _col(colmap, *act_names)
+    sur_c = _col(colmap, *sur_names)
+    event_c = _col(colmap, "event type") if event_filter else None
     rows: list[dict[str, Any]] = []
     for idx, row in df.iterrows():
-        ts = None
-        try:
-            t = pd.Timestamp(idx)
-            if t.tzinfo is None:
-                ts = int(t.timestamp())
-            else:
-                ts = int(t.tz_convert("UTC").timestamp())
-        except Exception:
-            ts = None
+        if event_c is not None:
+            et = str(row[event_c]).strip().lower()
+            if et in ("meeting", "call", "1", "11"):
+                continue
         est = clean(row[est_c]) if est_c is not None else None
         act = clean(row[act_c]) if act_c is not None else None
-        surprise = clean(row[sur_c]) if sur_c is not None else None
-        if surprise is None and isinstance(est, (int, float)) and isinstance(act, (int, float)) and est != 0:
-            surprise = (act - est) / abs(est) * 100.0
+        surprise = _surprise_pct(est, act, clean(row[sur_c]) if sur_c is not None else None, fraction=fraction)
         rows.append(
             {
-                "at": ts,
+                "at": _unix(idx),
                 "period": _period_label(idx, annual=False),
                 "estimate": est,
                 "actual": act,
                 "surprise_pct": surprise,
             }
         )
+    rows.sort(key=lambda r: r.get("at") or 0, reverse=True)
     return rows
+
+
+def _earnings_history(ticker: Any, clean: CleanFn) -> list[dict[str, Any]]:
+    """Last reported quarters: quoteSummary earningsHistory (current), then calendar dates."""
+    df = None
+    try:
+        df = ticker.get_earnings_history()
+    except Exception:
+        try:
+            df = ticker.earnings_history
+        except Exception:
+            df = None
+    rows = _prints_from_frame(
+        df,
+        clean,
+        est_names=("epsestimate", "estimate"),
+        act_names=("epsactual", "actual"),
+        sur_names=("surprisepercent", "surprise", "epssurprisepct"),
+        fraction=True,
+    )
+    if any(r.get("actual") is not None for r in rows):
+        return rows
+
+    df = None
+    try:
+        df = ticker.get_earnings_dates(limit=24)
+    except Exception:
+        try:
+            df = ticker.earnings_dates
+        except Exception:
+            df = None
+    return _prints_from_frame(
+        df,
+        clean,
+        est_names=("eps estimate", "epsestimate"),
+        act_names=("reported eps", "actual", "epsactual"),
+        sur_names=("surprise(%)", "surprise %", "surprise"),
+        fraction=False,
+        event_filter=True,
+    )
+
+
+def _upcoming_eps(ticker: Any, info: dict[str, Any], clean: CleanFn, next_earnings_unix: UnixFn) -> dict[str, Any] | None:
+    at = next_earnings_unix(info)
+    est = None
+    period = "Next"
+    try:
+        cal = getattr(ticker, "calendar", None)
+        if isinstance(cal, dict):
+            est = clean(cal.get("Earnings Average") or cal.get("EarningsAverage"))
+            dates = cal.get("Earnings Date")
+            if isinstance(dates, (list, tuple)) and dates:
+                period = _period_label(dates[0], annual=False)
+                at = at or _unix(dates[0])
+            elif dates is not None:
+                period = _period_label(dates, annual=False)
+                at = at or _unix(dates)
+    except Exception:
+        pass
+    if est is None:
+        try:
+            ee = ticker.get_earnings_estimate()
+            if ee is not None and not getattr(ee, "empty", True):
+                idx = "0q" if "0q" in ee.index else ee.index[0]
+                avg_c = _col(_colmap(ee), "avg", "average")
+                if avg_c is not None:
+                    est = clean(ee.loc[idx, avg_c])
+        except Exception:
+            pass
+    if at is None and est is None:
+        return None
+    return {"at": at, "period": period, "estimate": est, "actual": None, "surprise_pct": None}
 
 
 def build_fundamentals(
@@ -190,9 +287,8 @@ def build_fundamentals(
         return n * 100.0 if abs(n) <= 1.5 else n
 
     history = _earnings_history(ticker, clean)
-    now = pd.Timestamp.utcnow().timestamp()
     reported = [r for r in history if r.get("actual") is not None][:4]
-    upcoming = next((r for r in history if r.get("at") and r["at"] >= now - 12 * 3600 and r.get("actual") is None), None)
+    upcoming = _upcoming_eps(ticker, info, clean, next_earnings_unix)
 
     return {
         "symbol": symbol,

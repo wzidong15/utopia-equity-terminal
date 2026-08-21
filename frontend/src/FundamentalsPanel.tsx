@@ -97,7 +97,7 @@ export default function FundamentalsPanel({
         <article>
           <div className="section-h">
             EPS vs estimate
-            <span className="muted">last four reported</span>
+            <span className="muted">last four reported quarters</span>
           </div>
           <table>
             <thead>

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import { ColorType, createChart, type IChartApi, type ISeriesApi, type UTCTimestamp } from "lightweight-charts";
+import { formatChartTick, formatChartTime } from "./format";
 import type { PortfolioSnapshot } from "./portfolio";
 
 export default function NavChart({ snapshots }: { snapshots: PortfolioSnapshot[] }) {
@@ -20,7 +21,12 @@ export default function NavChart({ snapshots }: { snapshots: PortfolioSnapshot[]
         horzLines: { color: "#21262d" },
       },
       rightPriceScale: { borderColor: "#30363d" },
-      timeScale: { borderColor: "#30363d", timeVisible: true },
+      localization: { timeFormatter: formatChartTime },
+      timeScale: {
+        borderColor: "#30363d",
+        timeVisible: true,
+        tickMarkFormatter: formatChartTick,
+      },
     });
     const line = c.addLineSeries({ color: "#56d364", lineWidth: 2 });
     chart.current = c;

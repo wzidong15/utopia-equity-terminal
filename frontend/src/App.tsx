@@ -9,7 +9,7 @@ import ScreenerPanel from "./ScreenerPanel";
 import type { DeepAnalysis } from "./deep";
 import type { Fundamentals, PeerList } from "./fundamentals";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
-import { loadWatchlist, removeFromWatchlist, saveWatchlist, toggleWatchlistSymbol } from "./watchlist";
+import { defaultWatchSymbol, loadWatchlist, loadWatchSort, removeFromWatchlist, saveWatchlist, saveWatchSort, sortWatchlist, toggleWatchlistSymbol, watchSortFromId, watchSortId, WATCH_SORT_OPTIONS } from "./watchlist";
 import { getCachedQuote, partialFromSearch, rememberQuote, rememberQuotes } from "./quoteCache";
 import { fetchBars, getCachedBars, prefetchBars } from "./chartCache";
 import { CHART_REFRESH_MS, LIVE_REFRESH_MS } from "./config";
@@ -166,18 +166,36 @@ function applyLiveLast(bars: Bar[], quote: Quote | null, symbol: string): Bar[] 
     quote.session === "pre" || quote.session === "post" || quote.session === "rth"
       ? quote.session
       : last.session;
+  const now = quote.as_of && quote.as_of > 1_000_000_000 ? quote.as_of : Math.floor(Date.now() / 1000);
+  const minute = now - (now % 60);
+  if (typeof last.time === "number" && last.time < minute && minute - last.time <= 5 * 60) {
+    const prev = last.close ?? px;
+    return [
+      ...bars,
+      {
+        time: minute,
+        open: prev,
+        high: Math.max(prev, px),
+        low: Math.min(prev, px),
+        close: px,
+        volume: 0,
+        session: sess || last.session,
+      },
+    ];
+  }
   const high = last.high != null ? Math.max(last.high, px) : px;
   const low = last.low != null ? Math.min(last.low, px) : px;
   return [...bars.slice(0, -1), { ...last, close: px, high, low, session: sess || last.session }];
 }
 
 export default function App() {
-  const [symbol, setSymbol] = useState("AAPL");
+  const [symbol, setSymbol] = useState(() => defaultWatchSymbol(loadWatchlist(), loadWatchSort()));
   const [range, setRange] = useState<(typeof RANGES)[number]>("1d");
   const [board, setBoard] = useState<"gainers" | "losers" | "active" | "screen">("gainers");
   const [indices, setIndices] = useState<Quote[]>([]);
   const [watchSymbols, setWatchSymbols] = useState<string[]>(() => loadWatchlist());
   const [watch, setWatch] = useState<Quote[]>([]);
+  const [watchSort, setWatchSort] = useState(() => loadWatchSort());
   const [movers, setMovers] = useState<Quote[]>([]);
   const [moversLoading, setMoversLoading] = useState(false);
   const [moversErr, setMoversErr] = useState<string | null>(null);
@@ -457,6 +475,15 @@ export default function App() {
       return next;
     });
   };
+  const setWatchSortId = (id: string) => {
+    const next = watchSortFromId(id);
+    saveWatchSort(next);
+    setWatchSort(next);
+  };
+  const sortedWatch = useMemo(
+    () => sortWatchlist(watch, watchSymbols, watchSort),
+    [watch, watchSymbols, watchSort],
+  );
   const stats = useMemo(() => {
     const avgVol = quote?.avg_volume ?? numish(profile?.averageVolume);
     const vol = quote?.volume;
@@ -593,11 +620,42 @@ export default function App() {
 
       <div className="layout">
         <aside className="col">
-          <div className="section-h">Watchlist</div>
-          {watch.length === 0 && (
-            <div className="watch-empty">Click ★ on a symbol to add it. Click × to remove.</div>
+          <div className="watch-toolbar">
+            <div className="watch-toolbar-k">Watchlist</div>
+            <label className="watch-sort">
+              <span>Sort</span>
+              <select
+                value={watchSortId(watchSort)}
+                onChange={(e) => setWatchSortId(e.target.value)}
+                aria-label="Sort watchlist"
+              >
+                {WATCH_SORT_OPTIONS.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          {sortedWatch.length > 0 && (
+            <div className="watch-cols" aria-hidden>
+              <span className={watchSort.by === "name" ? "on" : ""}>
+                Ticker{watchSort.by === "name" ? (watchSort.dir === "asc" ? " A–Z" : " Z–A") : ""}
+              </span>
+              <span>Last</span>
+              <span className={watchSort.by === "pct" ? "on" : ""}>
+                {watchSort.by === "pct"
+                  ? watchSort.dir === "desc"
+                    ? "% day high"
+                    : "% day low"
+                  : "% day"}
+              </span>
+            </div>
           )}
-          {watch.map((w) => (
+          {sortedWatch.length === 0 && (
+            <div className="watch-empty">Click the star on a symbol to add it. Click x to remove.</div>
+          )}
+          {sortedWatch.map((w) => (
             <QuoteRow
               key={w.ticker}
               q={w}
@@ -723,6 +781,7 @@ export default function App() {
               SMA 20 / 50 / 200 on this chart interval
               {range === "1d" || range === "1h" || range === "3h" ? " · VWAP regular session" : ""}
               {range === "1h" || range === "3h" ? ` · zoomed to last ${range === "1h" ? "1 hour" : "3 hours"}` : ""}
+              {" · times in ET"}
               {chartBars.some((b) => b.session === "pre" || b.session === "post")
                 ? " · Yahoo pre-market (amber) and post-market (blue) candles."
                 : "."}
