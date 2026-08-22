@@ -12,7 +12,7 @@ Local US-stock visualization app in this repo. Not OpenBB Workspace. Formerly Fi
 - Backend: `backend/app.py` (FastAPI, port 8000)
 - Frontend: `frontend/` (Vite React, port 5173, proxies `/api`)
 - Run: `./start.sh` (loads repo-root `.env` if present)
-- Quote poll: `ZINTOPIA_LIVE_REFRESH_SEC` (default 10; `FINTOPIA_*` / `UTOPIA_*` aliases still work). Chart + portfolio NAV: `ZINTOPIA_CHART_REFRESH_SEC` (default 30).
+- Quote poll: `ZINTOPIA_LIVE_REFRESH_SEC` (default 10; `FINTOPIA_*` / `UTOPIA_*` aliases still work). Chart + portfolio NAV: `ZINTOPIA_CHART_REFRESH_SEC` (default 30). Market tape + ticker news: `ZINTOPIA_NEWS_REFRESH_SEC` (default 60); override with `ZINTOPIA_MARKET_NEWS_REFRESH_SEC` / `ZINTOPIA_TICKER_NEWS_REFRESH_SEC`.
 - Stock portfolio marks: Yahoo pre-market / after hours when the NYSE cash session is closed (America/New_York).
 - Paper funds persist in `~/.zintopia/portfolios.json` (not in git). Congress PTRs cache in `~/.zintopia/congress_ptr.json`. Optional `ZINTOPIA_DATA_DIR`. First launch renames `~/.fintopia` if present.
 - Outbound HTTP uses a process-wide httpx/requests pool (keep-alive; `ZINTOPIA_HTTP_POOL_SIZE`, default 20). Quote sources run sequentially. Do not add per-call `httpx.Client()` / `requests.Session()` / curl on the quote path.

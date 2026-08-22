@@ -7,7 +7,7 @@ import {
   type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
-import { lastValue, rollingSma, sessionVwap } from "./chartOverlays";
+import { lastValue, rollingSma, sessionVwap, type OverlayPoint } from "./chartOverlays";
 import { formatChartTick, formatChartTime } from "./format";
 import type { Bar } from "./types";
 
@@ -15,6 +15,7 @@ const SMA20 = "#58A6FF";
 const SMA50 = "#D2A8FF";
 const SMA200 = "#FFA657";
 const VWAP = "#E6EDF3";
+const COMPARE = "#F0883E";
 
 type OverlayId = "sma20" | "sma50" | "sma200" | "vwap";
 
@@ -22,10 +23,14 @@ export default function Chart({
   bars,
   showVwap,
   focusHours,
+  compare,
+  compareLabel,
 }: {
   bars: Bar[];
   showVwap?: boolean;
   focusHours?: number;
+  compare?: OverlayPoint[];
+  compareLabel?: string;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<IChartApi | null>(null);
@@ -35,6 +40,7 @@ export default function Chart({
   const sma50 = useRef<ISeriesApi<"Line"> | null>(null);
   const sma200 = useRef<ISeriesApi<"Line"> | null>(null);
   const vwap = useRef<ISeriesApi<"Line"> | null>(null);
+  const compareLine = useRef<ISeriesApi<"Line"> | null>(null);
   const [on, setOn] = useState<Record<OverlayId, boolean>>({
     sma20: true,
     sma50: true,
@@ -99,6 +105,14 @@ export default function Chart({
       lineStyle: LineStyle.Dashed,
       ...lineOpts,
     });
+    compareLine.current = c.addLineSeries({
+      color: COMPARE,
+      lineWidth: 2,
+      lineStyle: LineStyle.Dashed,
+      priceLineVisible: false,
+      lastValueVisible: true,
+      crosshairMarkerVisible: false,
+    });
     const ro = new ResizeObserver(() => {
       if (!host.current) return;
       c.applyOptions({ width: host.current.clientWidth, height: host.current.clientHeight });
@@ -114,6 +128,7 @@ export default function Chart({
       sma50.current = null;
       sma200.current = null;
       vwap.current = null;
+      compareLine.current = null;
     };
   }, []);
 
@@ -170,6 +185,11 @@ export default function Chart({
     sma50.current?.setData(s50);
     sma200.current?.setData(s200);
     vwap.current?.setData(vw);
+    compareLine.current?.setData(compare && compare.length ? compare : []);
+    compareLine.current?.applyOptions({
+      visible: !!(compare && compare.length),
+      title: compareLabel || "",
+    });
     setLast({
       sma20: lastValue(s20),
       sma50: lastValue(s50),
@@ -194,7 +214,7 @@ export default function Chart({
     } else {
       scale.fitContent();
     }
-  }, [bars, showVwap, focusHours]);
+  }, [bars, showVwap, focusHours, compare, compareLabel]);
 
   const toggle = (id: OverlayId) => setOn((prev) => ({ ...prev, [id]: !prev[id] }));
   const fmt = (n: number | null) =>
@@ -241,6 +261,11 @@ export default function Chart({
           >
             VWAP {fmt(last.vwap)}
           </button>
+        )}
+        {compare && compare.length > 0 && (
+          <span className="chart-ov on" style={{ color: COMPARE, cursor: "default" } as CSSProperties}>
+            {compareLabel || "vs"} {fmt(lastValue(compare))}
+          </span>
         )}
       </div>
     </>

@@ -62,6 +62,7 @@ export type NewsItem = {
   url?: string | null;
   publisher?: string | null;
   published?: string | number | null;
+  kind?: "breaking" | "blackswan" | string | null;
 };
 
 export type Profile = Record<string, string | number | null>;

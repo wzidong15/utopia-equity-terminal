@@ -111,6 +111,32 @@ export function formatChartTick(time: ChartTime, tickMarkType: number): string {
   return `${p.hour}:${p.minute} ${p.dayPeriod}`;
 }
 
+export function pctFrac(n?: number | null, d = 2) {
+  if (n == null || Number.isNaN(n)) return "—";
+  const p = Math.abs(n) <= 1.5 ? n * 100 : n;
+  return `${p.toFixed(d)}%`;
+}
+
+export function fmtNewsTime(ts: unknown): string {
+  const n = numish(ts);
+  if (n == null) {
+    const s = typeof ts === "string" ? ts.trim() : "";
+    return s ? s.slice(0, 16) : "";
+  }
+  const ms = n < 1e12 ? n * 1000 : n;
+  const age = Date.now() - ms;
+  if (age >= 0 && age < 60_000) return `${Math.max(1, Math.round(age / 1000))}s ago`;
+  if (age >= 0 && age < 3_600_000) return `${Math.round(age / 60_000)}m ago`;
+  if (age >= 0 && age < 36 * 3_600_000) return `${Math.round(age / 3_600_000)}h ago`;
+  return new Date(ms).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: MARKET_TZ,
+  });
+}
+
 export function fmtEarnings(ts: unknown): string {
   const n = numish(ts);
   if (n == null) return "—";

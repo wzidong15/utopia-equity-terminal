@@ -8,17 +8,48 @@ import FundamentalsPanel from "./FundamentalsPanel";
 import ScreenerPanel from "./ScreenerPanel";
 import type { DeepAnalysis } from "./deep";
 import type { Fundamentals, PeerList } from "./fundamentals";
+import OwnershipPanel, { type Ownership } from "./OwnershipPanel";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
 import { defaultWatchSymbol, loadWatchlist, loadWatchSort, removeFromWatchlist, saveWatchlist, saveWatchSort, sortWatchlist, toggleWatchlistSymbol, watchSortFromId, watchSortId, WATCH_SORT_OPTIONS } from "./watchlist";
 import { getCachedQuote, partialFromSearch, rememberQuote, rememberQuotes } from "./quoteCache";
 import { fetchBars, getCachedBars, prefetchBars } from "./chartCache";
-import { CHART_REFRESH_MS, LIVE_REFRESH_MS } from "./config";
+import { relativeReturn, scaleToPrimary } from "./chartOverlays";
+import {
+  CHART_REFRESH_MS,
+  LIVE_REFRESH_MS,
+  MARKET_NEWS_REFRESH_MS,
+  MARKET_NEWS_REFRESH_SEC,
+  TICKER_NEWS_REFRESH_MS,
+  TICKER_NEWS_REFRESH_SEC,
+  fmtRefreshSec,
+} from "./config";
 import { marketClock } from "./marketSession";
-import { cls, dividendYieldPct, fmt, fmtEarnings, fmtInt, numish, pct, rvol } from "./format";
+import { cls, dividendYieldPct, fmt, fmtEarnings, fmtInt, numish, pct, pctFrac, rvol } from "./format";
+import NewsFeed from "./NewsFeed";
 const RANGES = ["1h", "3h", "1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"] as const;
 
 function ohlcvRange(range: (typeof RANGES)[number]) {
   return range === "1h" || range === "3h" ? "1d" : range;
+}
+
+const COMPARE_KEY = "zintopia.chart.compare";
+
+function loadCompareSymbol() {
+  try {
+    const raw = (localStorage.getItem(COMPARE_KEY) || "").trim().toUpperCase();
+    if (/^[A-Z][A-Z.]{0,7}$/.test(raw)) return raw;
+  } catch {
+    /* ignore */
+  }
+  return "SPY";
+}
+
+function saveCompareSymbol(sym: string) {
+  try {
+    localStorage.setItem(COMPARE_KEY, sym);
+  } catch {
+    /* ignore */
+  }
 }
 function taBadgeClass(label?: string | null) {
   if (!label) return "badge ta-neutral";
@@ -204,6 +235,7 @@ export default function App() {
   const [bars, setBars] = useState<Bar[]>([]);
   const [barsLoading, setBarsLoading] = useState(false);
   const [news, setNews] = useState<NewsItem[]>([]);
+  const [marketNews, setMarketNews] = useState<NewsItem[]>([]);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [ta, setTa] = useState<TA | null>(null);
   const [deep, setDeep] = useState<DeepAnalysis | null>(null);
@@ -211,7 +243,13 @@ export default function App() {
   const [deepErr, setDeepErr] = useState<string | null>(null);
   const [fundamentals, setFundamentals] = useState<Fundamentals | null>(null);
   const [fundamentalsLoading, setFundamentalsLoading] = useState(false);
+  const [ownership, setOwnership] = useState<Ownership | null>(null);
+  const [ownershipLoading, setOwnershipLoading] = useState(false);
   const [peers, setPeers] = useState<PeerList | null>(null);
+  const [compareOn, setCompareOn] = useState(false);
+  const [compareSym, setCompareSym] = useState(() => loadCompareSymbol());
+  const [compareDraft, setCompareDraft] = useState(() => loadCompareSymbol());
+  const [compareBars, setCompareBars] = useState<Bar[]>([]);
   const [q, setQ] = useState("");
   const [hits, setHits] = useState<
     { symbol: string; name: string; exchange?: string; change_pct?: number }[]
@@ -336,7 +374,6 @@ export default function App() {
     }, LIVE_REFRESH_MS);
 
     const secondary = window.setTimeout(() => {
-      api.news(symbol).then((n) => live && setNews(n.items)).catch(() => live && setNews([]));
       api.ta(symbol).then((t) => live && setTa(t)).catch(() => live && setTa(null));
       api.profile(symbol).then((p) => live && setProfile(p)).catch(() => live && setProfile(null));
     }, 300);
@@ -347,6 +384,38 @@ export default function App() {
       window.clearTimeout(secondary);
     };
   }, [symbol]);
+
+  useEffect(() => {
+    let live = true;
+    const load = () => {
+      api
+        .news(symbol)
+        .then((n) => live && setNews(n.items || []))
+        .catch(() => live && setNews([]));
+    };
+    load();
+    const id = window.setInterval(load, TICKER_NEWS_REFRESH_MS);
+    return () => {
+      live = false;
+      window.clearInterval(id);
+    };
+  }, [symbol]);
+
+  useEffect(() => {
+    let live = true;
+    const load = () => {
+      api
+        .marketNews()
+        .then((n) => live && setMarketNews(n.items || []))
+        .catch(() => live && setMarketNews([]));
+    };
+    load();
+    const id = window.setInterval(load, MARKET_NEWS_REFRESH_MS);
+    return () => {
+      live = false;
+      window.clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     let live = true;
@@ -387,6 +456,24 @@ export default function App() {
   }, [symbol, range]);
 
   useEffect(() => {
+    const bench = compareSym.trim().toUpperCase();
+    if (!compareOn || !bench || bench === symbol.trim().toUpperCase()) {
+      setCompareBars([]);
+      return;
+    }
+    let live = true;
+    const histRange = ohlcvRange(range);
+    const cached = getCachedBars(bench, histRange);
+    if (cached) setCompareBars(cached);
+    fetchBars(bench, histRange)
+      .then((next) => live && setCompareBars(next))
+      .catch(() => live && setCompareBars([]));
+    return () => {
+      live = false;
+    };
+  }, [symbol, range, compareSym, compareOn]);
+
+  useEffect(() => {
     let live = true;
     setDeep(null);
     setDeepErr(null);
@@ -412,6 +499,8 @@ export default function App() {
     let live = true;
     setFundamentals(null);
     setFundamentalsLoading(true);
+    setOwnership(null);
+    setOwnershipLoading(true);
     setPeers(null);
     const t = window.setTimeout(() => {
       api
@@ -425,6 +514,18 @@ export default function App() {
           if (!live) return;
           setFundamentals(null);
           setFundamentalsLoading(false);
+        });
+      api
+        .ownership(symbol)
+        .then((o) => {
+          if (!live) return;
+          setOwnership(o);
+          setOwnershipLoading(false);
+        })
+        .catch(() => {
+          if (!live) return;
+          setOwnership(null);
+          setOwnershipLoading(false);
         });
       api
         .peers(symbol)
@@ -506,23 +607,52 @@ export default function App() {
       ["Yield", yieldPct == null ? "—" : `${yieldPct.toFixed(2)}%`],
       ["Earnings", earn],
       ["RSI", fmt(quote?.rsi, 1)],
+      ["Beta", fmt(numish(profile?.beta))],
+      ["Float", fmtInt(numish(profile?.floatShares))],
+      ["Short %", pctFrac(numish(profile?.shortPercentOfFloat))],
       ["52w high", fmt(quote?.year_high ?? numish(profile?.fiftyTwoWeekHigh))],
       ["52w low", fmt(quote?.year_low ?? numish(profile?.fiftyTwoWeekLow))],
     ] as [string, string, string?][];
   }, [quote, profile]);
   const chartBars = useMemo(() => applyLiveLast(bars, quote, symbol), [bars, quote, symbol]);
+  const comparePoints = useMemo(
+    () => (compareOn ? scaleToPrimary(chartBars, compareBars) : []),
+    [compareOn, chartBars, compareBars],
+  );
+  const compareRel = useMemo(
+    () => (compareOn ? relativeReturn(chartBars, compareBars) : null),
+    [compareOn, chartBars, compareBars],
+  );
+
+  const commitCompare = (raw: string) => {
+    const next = raw.trim().toUpperCase().split(":")[0] || "SPY";
+    setCompareDraft(next);
+    setCompareSym(next);
+    saveCompareSymbol(next);
+    setCompareOn(true);
+  };
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand">
-          <img
-            className="brand-logo"
-            src="/logo-horizontal.svg"
-            width={138}
-            height={32}
-            alt="Zintopia"
-          />
+          <a
+            className="brand-home"
+            href="/"
+            title="Reload Zintopia"
+            onClick={(e) => {
+              e.preventDefault();
+              window.location.reload();
+            }}
+          >
+            <img
+              className="brand-logo"
+              src="/logo-horizontal.svg"
+              width={138}
+              height={32}
+              alt="Zintopia"
+            />
+          </a>
           <span>US equities · stock portfolio</span>
         </div>
         <div className="view-tabs">
@@ -601,6 +731,12 @@ export default function App() {
         </div>
       </header>
       <SessionClock />
+      <NewsFeed
+        items={marketNews}
+        empty="No market headlines"
+        variant="tape"
+        hint={`Yahoo · ${fmtRefreshSec(MARKET_NEWS_REFRESH_SEC)}`}
+      />
 
       {view === "research" && (
         <>
@@ -761,6 +897,31 @@ export default function App() {
                 {r.toUpperCase()}
               </button>
             ))}
+            <label className={`range-vs${compareOn ? " on" : ""}`}>
+              <button
+                type="button"
+                className={compareOn ? "on" : ""}
+                onClick={() => setCompareOn((v) => !v)}
+              >
+                vs
+                {compareRel != null
+                  ? ` ${compareRel >= 0 ? "+" : ""}${(compareRel * 100).toFixed(1)}%`
+                  : ""}
+              </button>
+              <input
+                value={compareDraft}
+                aria-label="Compare ticker"
+                maxLength={8}
+                onChange={(e) => setCompareDraft(e.target.value.toUpperCase())}
+                onBlur={() => commitCompare(compareDraft)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    (e.target as HTMLInputElement).blur();
+                  }
+                }}
+              />
+            </label>
           </div>
           <div className="stats">
             {stats.map(([k, v, tone]) => (
@@ -776,11 +937,16 @@ export default function App() {
               bars={chartBars}
               showVwap={range === "1d" || range === "1h" || range === "3h"}
               focusHours={range === "1h" ? 1 : range === "3h" ? 3 : undefined}
+              compare={comparePoints}
+              compareLabel={compareSym}
             />
             <div className="muted chart-note">
               SMA 20 / 50 / 200 on this chart interval
               {range === "1d" || range === "1h" || range === "3h" ? " · VWAP regular session" : ""}
               {range === "1h" || range === "3h" ? ` · zoomed to last ${range === "1h" ? "1 hour" : "3 hours"}` : ""}
+              {compareOn && comparePoints.length
+                ? ` · ${compareSym} scaled to first overlapping close`
+                : ""}
               {" · times in ET"}
               {chartBars.some((b) => b.session === "pre" || b.session === "post")
                 ? " · Yahoo pre-market (amber) and post-market (blue) candles."
@@ -788,6 +954,7 @@ export default function App() {
             </div>
           </div>
           <FundamentalsPanel data={fundamentals} loading={fundamentalsLoading} />
+          <OwnershipPanel data={ownership} loading={ownershipLoading} />
           <LlmAdvicePanel symbol={symbol} />
           <DeepPanel data={deep} loading={deepLoading} error={deepErr} peers={peers} onPickPeer={pick} />
         </main>
@@ -810,18 +977,11 @@ export default function App() {
               </div>
             </div>
           )}
-          <div className="section-h">News (Yahoo)</div>
-          <div className="news">
-            {news.map((n, i) => (
-              <a key={i} href={n.url || "#"} target="_blank" rel="noreferrer">
-                {n.title}
-                <div className="src">
-                  {n.publisher}
-                  {n.published ? ` · ${String(n.published).slice(0, 16)}` : ""}
-                </div>
-              </a>
-            ))}
+          <div className="section-h">
+            News (Yahoo)
+            <span className="muted">{symbol} · {fmtRefreshSec(TICKER_NEWS_REFRESH_SEC)}</span>
           </div>
+          <NewsFeed items={news} empty={`No Yahoo headlines for ${symbol}`} />
           {profile?.longBusinessSummary && (
             <>
               <div className="section-h">Profile</div>

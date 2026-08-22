@@ -1,5 +1,6 @@
 import type { DeepAnalysis } from "./deep";
 import type { Fundamentals, PeerList, ScreenerResult } from "./fundamentals";
+import type { Ownership } from "./OwnershipPanel";
 import type { LlmAdviceChatResponse, LlmAdviceResponse, VibePortfolioChatResponse, VibePortfolioResponse } from "./llm";
 import type { Portfolio, PortfolioStrategyKind, PortfolioSummary } from "./portfolio";
 import type { Bar, NewsItem, Profile, Quote, TA } from "./types";
@@ -91,9 +92,12 @@ export const api = {
   fundamentals: (symbol: string) =>
     getJson<Fundamentals>(`/api/fundamentals/${encodeURIComponent(symbol)}`),
   peers: (symbol: string) => getJson<PeerList>(`/api/peers/${encodeURIComponent(symbol)}`),
+  ownership: (symbol: string) =>
+    getJson<Ownership>(`/api/ownership/${encodeURIComponent(symbol)}`),
   screener: (query: string) => getJson<ScreenerResult>(`/api/screener${query ? `?${query}` : ""}`),
   news: (symbol: string) =>
     getJson<{ items: NewsItem[] }>(`/api/news/${encodeURIComponent(symbol)}`),
+  marketNews: () => getJson<{ items: NewsItem[]; source?: string }>("/api/market-news?limit=24"),
   ta: (symbol: string) => getJson<TA>(`/api/ta/${encodeURIComponent(symbol)}?interval=1d`),
   deep: (symbol: string) => getJson<DeepAnalysis>(`/api/deep/${encodeURIComponent(symbol)}`),
   llmAdvice: (symbol: string, signal?: AbortSignal): Promise<LlmAdviceResponse> =>

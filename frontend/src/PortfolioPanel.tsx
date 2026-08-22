@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { CHART_REFRESH_MS } from "./config";
 import NavChart from "./NavChart";
@@ -25,6 +25,14 @@ function pct(n?: number | null) {
 function cls(n?: number | null) {
   if (n == null) return "";
   return n >= 0 ? "up" : "down";
+}
+
+function roundShares(n: number) {
+  return Math.round(n * 1e6) / 1e6;
+}
+
+function fmtShares(n: number) {
+  return n.toLocaleString(undefined, { maximumFractionDigits: 6 });
 }
 
 function stubFromSummary(s: PortfolioSummary): Portfolio {
@@ -217,12 +225,39 @@ export default function PortfolioPanel({
       .catch((e) => setErr(String(e.message || e)));
   };
 
+  const ticket = useMemo(() => {
+    const cash = Number(detail?.cash ?? 0);
+    const px = tradeQuote?.price != null && Number.isFinite(tradeQuote.price) && tradeQuote.price > 0
+      ? tradeQuote.price
+      : null;
+    const qty = tradeQty.trim() ? Number(tradeQty) : NaN;
+    const dollars = tradeNotional.trim() ? Number(tradeNotional) : NaN;
+    let shares: number | null = null;
+    if (Number.isFinite(qty) && qty > 0) shares = roundShares(qty);
+    else if (Number.isFinite(dollars) && dollars > 0 && px) shares = roundShares(dollars / px);
+    const total = shares != null && px != null ? roundShares(shares) * px : null;
+    const sym = tradeSym.trim().toUpperCase();
+    const held = detail?.holdings?.find((h) => h.symbol === sym)?.shares ?? 0;
+    const maxBuy = px ? roundShares(cash / px) : null;
+    const cashOk = total == null ? null : total <= cash + 0.01;
+    const shortfall = total != null && cashOk === false ? total - cash : 0;
+    const cashAfter = total == null ? null : tradeSide === "buy" ? cash - total : cash + total;
+    const sharesOk = shares == null ? null : shares <= held + 1e-8;
+    return { cash, px, shares, total, held, maxBuy, cashOk, shortfall, cashAfter, sharesOk, sym };
+  }, [detail, tradeQuote, tradeQty, tradeNotional, tradeSym, tradeSide]);
+
   const submitTrade = () => {
     if (!selectedId) return;
     const shares = tradeQty.trim() ? Number(tradeQty) : undefined;
     const notional = tradeNotional.trim() ? Number(tradeNotional) : undefined;
     if (!tradeSym.trim() || (!shares && !notional)) {
       setErr("Enter a ticker and either shares or dollar amount.");
+      return;
+    }
+    if (tradeSide === "buy" && ticket.total != null && ticket.cashOk === false) {
+      setErr(
+        `Insufficient cash (${money(ticket.cash)}) for a ${money(ticket.total)} buy. Need ${money(ticket.shortfall)} more.`,
+      );
       return;
     }
     setBusy(true);
@@ -451,15 +486,6 @@ export default function PortfolioPanel({
             Ticker (stock / ETF)
             <SymbolSearch value={tradeSym} onChange={setTradeSym} onQuote={setTradeQuote} />
           </div>
-          {tradeQuote?.price ? (
-            <div className="muted pf-hint">
-              {tradeQty.trim() && Number(tradeQty) > 0
-                ? `≈ ${money(Number(tradeQty) * tradeQuote.price)} for ${tradeQty} shares`
-                : tradeNotional.trim() && Number(tradeNotional) > 0
-                  ? `≈ ${(Number(tradeNotional) / tradeQuote.price).toFixed(2)} shares`
-                  : `Last ${money(tradeQuote.price)}`}
-            </div>
-          ) : null}
           <div className="tabs">
             {(["buy", "sell"] as const).map((s) => (
               <button key={s} className={tradeSide === s ? "on" : ""} onClick={() => setTradeSide(s)}>
@@ -483,8 +509,87 @@ export default function PortfolioPanel({
               onChange={(e) => setTradeNotional(e.target.value)}
             />
           </label>
-          <button type="button" className="llm-btn" onClick={submitTrade} disabled={busy || !detail}>
-            {fundName ? `Place stock order in ${fundName}` : "Place stock order"}
+          {ticket.px != null ? (
+            <div className={`pf-preview${tradeSide === "buy" && ticket.cashOk === false ? " warn" : ""}`}>
+              <div>
+                <div className="k">Last</div>
+                <div className="v">{money(ticket.px)}</div>
+              </div>
+              <div>
+                <div className="k">Cash</div>
+                <div className="v">{money(ticket.cash)}</div>
+              </div>
+              {ticket.shares != null && ticket.total != null ? (
+                <>
+                  <div>
+                    <div className="k">{tradeSide === "buy" ? "Buy" : "Sell"}</div>
+                    <div className="v">
+                      {fmtShares(ticket.shares)} sh × {money(ticket.px)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="k">Total</div>
+                    <div className="v">{money(ticket.total)}</div>
+                  </div>
+                  {tradeSide === "buy" ? (
+                    <>
+                      <div>
+                        <div className="k">Cash after</div>
+                        <div className={`v ${ticket.cashOk ? "" : "down"}`}>
+                          {money(ticket.cashAfter)}
+                        </div>
+                      </div>
+                      <div className={`pf-preview-msg ${ticket.cashOk ? "up" : "down"}`}>
+                        {ticket.cashOk
+                          ? "Cash is sufficient"
+                          : `Not enough cash · need ${money(ticket.shortfall)} more`}
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div>
+                        <div className="k">Held / after</div>
+                        <div className={`v ${ticket.sharesOk === false ? "down" : ""}`}>
+                          {fmtShares(ticket.held)} → {fmtShares(Math.max(0, ticket.held - ticket.shares))}
+                        </div>
+                      </div>
+                      <div className={`pf-preview-msg ${ticket.sharesOk === false ? "down" : "up"}`}>
+                        {ticket.sharesOk === false
+                          ? `Not enough shares · holding ${fmtShares(ticket.held)}`
+                          : `Proceeds ${money(ticket.total)} · cash after ${money(ticket.cashAfter)}`}
+                      </div>
+                    </>
+                  )}
+                </>
+              ) : (
+                <div className="pf-preview-msg muted">
+                  {ticket.maxBuy != null && ticket.maxBuy > 0
+                    ? `Enter shares or dollars. Cash covers about ${fmtShares(ticket.maxBuy)} shares.`
+                    : "Enter shares or a dollar amount."}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="muted pf-hint">Last price loads from the ticker to size the order.</div>
+          )}
+          <button
+            type="button"
+            className="llm-btn"
+            onClick={submitTrade}
+            disabled={
+              busy ||
+              !detail ||
+              (tradeSide === "buy" && ticket.cashOk === false) ||
+              (tradeSide === "sell" && ticket.sharesOk === false)
+            }
+          >
+            {tradeSide === "buy" && ticket.total != null && ticket.sym
+              ? `Buy ${ticket.sym} for ${money(ticket.total)}`
+              : tradeSide === "sell" && ticket.total != null && ticket.sym
+                ? `Sell ${ticket.sym} for ${money(ticket.total)}`
+                : fundName
+                  ? `Place stock order in ${fundName}`
+                  : "Place stock order"}
           </button>
           <div className="muted pf-hint">US stocks and ETFs only. Options are not supported.</div>
         </div>

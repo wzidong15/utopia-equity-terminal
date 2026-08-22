@@ -38,6 +38,8 @@ from tradingview_ta import Interval, TA_Handler
 import congress_ptr
 import fundamentals as fundamentals_mod
 import llm_advice
+import newsfeed
+import ownership as ownership_mod
 import vibe_portfolio
 
 POLYGON_KEY = os.environ.get("POLYGON_API_KEY") or os.environ.get("MASSIVE_API_KEY") or ""
@@ -1753,6 +1755,11 @@ def profile(symbol: str):
             "averageVolume",
             "sharesOutstanding",
             "floatShares",
+            "sharesShort",
+            "shortPercentOfFloat",
+            "shortRatio",
+            "sharesShortPriorMonth",
+            "dateShortInterest",
             "heldPercentInsiders",
             "heldPercentInstitutions",
             "targetMeanPrice",
@@ -1771,9 +1778,26 @@ def profile(symbol: str):
         return out
 
     try:
-        return _cached(f"profile:{yf_sym}", 300, fetch)
+        return _cached(f"profile:{yf_sym}:si", 300, fetch)
     except Exception as e:
         raise HTTPException(502, f"Profile failed: {e}") from e
+
+
+@app.get("/api/market-news")
+def market_news(limit: int = 24):
+    limit = max(5, min(limit, 36))
+
+    def fetch():
+        def pull(url: str) -> str:
+            return _httpx_fetch("GET", url, timeout=8)
+
+        items = newsfeed.market_news(pull, ticker_fn=_yf_ticker, limit=limit)
+        return {"source": "yahoo-rss", "items": items}
+
+    try:
+        return _cached(f"market-news:{limit}", 20, fetch)
+    except Exception as e:
+        raise HTTPException(502, f"Market news failed: {e}") from e
 
 
 @app.get("/api/news/{symbol}")
@@ -1783,29 +1807,11 @@ def news(symbol: str, limit: int = 12):
 
     def fetch():
         t = _yf_ticker(yf_sym)
-        items = []
-        for n in (t.news or [])[:limit]:
-            content = n.get("content") or n
-            title = content.get("title") or n.get("title")
-            pub = content.get("pubDate") or n.get("providerPublishTime")
-            url = None
-            click = content.get("clickThroughUrl") or {}
-            if isinstance(click, dict):
-                url = click.get("url")
-            url = url or n.get("link")
-            provider = (content.get("provider") or {}).get("displayName") if isinstance(content.get("provider"), dict) else n.get("publisher")
-            items.append(
-                {
-                    "title": title,
-                    "url": url,
-                    "publisher": provider,
-                    "published": pub,
-                }
-            )
+        items = newsfeed.ticker_news(t, limit=limit)
         return {"symbol": yf_sym, "source": "yfinance", "items": items}
 
     try:
-        return _cached(f"news:{yf_sym}", 120, fetch)
+        return _cached(f"news:{yf_sym}", 20, fetch)
     except Exception as e:
         raise HTTPException(502, f"News failed: {e}") from e
 
@@ -1827,6 +1833,25 @@ def fundamentals(symbol: str):
         return _cached(f"fundamentals:{yf_sym}:eh", 900, fetch)
     except Exception as e:
         raise HTTPException(502, f"Fundamentals failed: {e}") from e
+
+
+@app.get("/api/ownership/{symbol}")
+def ownership(symbol: str):
+    yf_sym = symbol.strip().upper().split(":")[-1]
+
+    def fetch():
+        t = _yf_ticker(yf_sym)
+        info: dict[str, Any] = {}
+        try:
+            info = t.info or {}
+        except Exception:
+            info = {}
+        return ownership_mod.build_ownership(yf_sym, t, info, _clean)
+
+    try:
+        return _cached(f"ownership:{yf_sym}", 900, fetch)
+    except Exception as e:
+        raise HTTPException(502, f"Ownership failed: {e}") from e
 
 
 def _symbol_tv_sector(symbol: str) -> str | None:
@@ -1991,21 +2016,7 @@ def _congress_block(symbol: str) -> dict[str, Any]:
 
 
 def _news_items(t: yf.Ticker, limit: int = 8) -> list[dict[str, Any]]:
-    items = []
-    for n in (t.news or [])[:limit]:
-        content = n.get("content") or n
-        title = content.get("title") or n.get("title")
-        pub = content.get("pubDate") or n.get("providerPublishTime")
-        click = content.get("clickThroughUrl") or {}
-        url = click.get("url") if isinstance(click, dict) else None
-        url = url or n.get("link")
-        provider = (
-            (content.get("provider") or {}).get("displayName")
-            if isinstance(content.get("provider"), dict)
-            else n.get("publisher")
-        )
-        items.append({"title": title, "url": url, "publisher": provider, "published": pub})
-    return items
+    return newsfeed.ticker_news(t, limit=limit)
 
 
 def _insider_block(t: yf.Ticker) -> dict[str, Any]:

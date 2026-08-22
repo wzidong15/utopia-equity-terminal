@@ -88,8 +88,11 @@ cp .env.example .env
 
 | Variable | Purpose |
 |---|---|
-| `ZINTOPIA_LIVE_REFRESH_SEC` | Selected ticker **price** poll interval in seconds (default `10`). News and Daily TA stay on-demand. |
+| `ZINTOPIA_LIVE_REFRESH_SEC` | Selected ticker **price** poll interval in seconds (default `10`). Daily TA stays on-demand. |
 | `ZINTOPIA_CHART_REFRESH_SEC` | Stock charts, NAV chart, and portfolio performance poll in seconds (default `30`). |
+| `ZINTOPIA_NEWS_REFRESH_SEC` | Market news + ticker news poll in seconds (default `60`). |
+| `ZINTOPIA_MARKET_NEWS_REFRESH_SEC` | Market news tape only (falls back to `ZINTOPIA_NEWS_REFRESH_SEC`). |
+| `ZINTOPIA_TICKER_NEWS_REFRESH_SEC` | Selected-ticker news only (falls back to `ZINTOPIA_NEWS_REFRESH_SEC`). |
 | `ZINTOPIA_STRATEGY_INTERVAL_SEC` | How often auto paper strategies try a step while the server is up (default `3600` = 1 hour). |
 | `ZINTOPIA_DATA_DIR` | Local JSON dir for paper funds and the Congress PTR cache (default `~/.zintopia`). |
 | `ZINTOPIA_HTTP_POOL_SIZE` | Keep-alive connection pool for outbound quote HTTP (default `20`, clamp 2–128). |
@@ -254,8 +257,11 @@ cp .env.example .env
 
 | 变量 | 用途 |
 |---|---|
-| `ZINTOPIA_LIVE_REFRESH_SEC` | 当前股票 **价格** 轮询间隔，秒（默认 `10`）。新闻与日线技术分析仍按需加载。 |
+| `ZINTOPIA_LIVE_REFRESH_SEC` | 当前股票 **价格** 轮询间隔，秒（默认 `10`）。日线技术分析仍按需加载。 |
 | `ZINTOPIA_CHART_REFRESH_SEC` | 股票图、净值图与组合业绩轮询间隔，秒（默认 `30`）。 |
+| `ZINTOPIA_NEWS_REFRESH_SEC` | 市场新闻与个股新闻轮询间隔，秒（默认 `60`）。 |
+| `ZINTOPIA_MARKET_NEWS_REFRESH_SEC` | 仅市场新闻（未设时用 `ZINTOPIA_NEWS_REFRESH_SEC`）。 |
+| `ZINTOPIA_TICKER_NEWS_REFRESH_SEC` | 仅当前股票新闻（未设时用 `ZINTOPIA_NEWS_REFRESH_SEC`）。 |
 | `ZINTOPIA_STRATEGY_INTERVAL_SEC` | 服务运行时自动策略尝试一步的间隔（默认 `3600` = 1 小时）。 |
 | `ZINTOPIA_DATA_DIR` | 模拟组合与国会 PTR 缓存的本地 JSON 目录（默认 `~/.zintopia`）。 |
 | `ZINTOPIA_HTTP_POOL_SIZE` | 出站行情 HTTP 的 keep-alive 连接池（默认 `20`，限制 2–128）。 |
